@@ -1,0 +1,67 @@
+{
+  "name": "MdStudio",
+  "version": "1.0.0",
+  "source": "Selected first-brand-board image, 2026-10-26",
+  "notes": "explicit_from_board values are transcribed from the approved brand board; suggested_implementation values are initial engineering recommendations, not original design measurements.",
+  "identity": {
+    "productName": "MdStudio",
+    "chinesePositioning": "AI 时代的 Markdown 编辑工作台",
+    "englishTagline": "Write · Read · Create with AI",
+    "wordmarkCase": "MdStudio",
+    "keywords": ["Professional", "Minimal", "Developer-friendly", "Intelligent", "Reliable"],
+    "sourceType": "explicit_from_board"
+  },
+  "color": {
+    "explicit_from_board": {
+      "navy": "#0F172A",
+      "primaryBlue": "#3B82F6",
+      "tealCyan": "#06B6D4",
+      "lavender": "#A78BFA",
+      "lightGray": "#E5E7EB",
+      "offWhite": "#F8FAFC"
+    },
+    "suggested_implementation": {
+      "white": "#FFFFFF",
+      "actionBlue": "#2563EB",
+      "actionBlueHover": "#1D4ED8",
+      "mutedText": "#64748B",
+      "darkCanvas": "#0B1220",
+      "darkSurface": "#111D30",
+      "darkBorder": "#263247",
+      "darkText": "#F8FAFC",
+      "selectedSurface": "#EFF6FF"
+    }
+  },
+  "typography": {
+    "explicit_from_board": {
+      "latinFamily": "Inter",
+      "tone": ["Modern", "Clean", "Professional"]
+    },
+    "suggested_implementation": {
+      "fontStack": "Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Segoe UI', system-ui, sans-serif",
+      "codeFontStack": "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace",
+      "fontSizesPx": {"body": 16, "caption": 12, "small": 14, "h1": 32, "h2": 24, "h3": 20},
+      "bodyLineHeight": 1.7
+    }
+  },
+  "layout": {
+    "suggested_implementation": {
+      "toolbarHeightPx": 52,
+      "leftSidebarWidthPx": 244,
+      "rightSidebarWidthPx": 224,
+      "documentMaxWidthPx": 860,
+      "controlRadiusPx": 8,
+      "popupRadiusPx": 12,
+      "transitionDurationMs": 160
+    }
+  },
+  "logo": {
+    "direction": "Geometric blue-cyan M + light document sheet + upper-right blue folded page corner + dark I-beam editing caret",
+    "wordmark": "MdStudio",
+    "primaryWordmarkColor": "#0F172A",
+    "reference": "brand/reference/MdStudio_Brand_Board_Approved.png",
+    "productionVectorAvailable": false,
+    "status": "requires_vector_reconstruction_and_visual_acceptance",
+    "forbiddenRedesigns": ["mountain-M", "green-pencil-document", "robot", "generic-M-down-arrow"]
+  }
+}

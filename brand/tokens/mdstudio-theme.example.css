@@ -1,0 +1,54 @@
+/* MdStudio brand theme integration example — not a drop-in replacement for existing shadcn/ui globals.
+ * Colors are sourced from brand/tokens/mdstudio.tokens.json.
+ * Map variables to the project's actual theme architecture; do not introduce conflicting :root globals.
+ * Source-approved brand values and engineering-derived accessible UI states are intentionally separate.
+ */
+.mdstudio-theme {
+  --mds-brand-navy: #0F172A;
+  --mds-brand-blue: #3B82F6;
+  --mds-brand-cyan: #06B6D4;
+  --mds-brand-lavender: #A78BFA;
+  --mds-brand-gray: #E5E7EB;
+  --mds-brand-off-white: #F8FAFC;
+
+  --mds-surface: #FFFFFF;
+  --mds-canvas: #F8FAFC;
+  --mds-text: #0F172A;
+  --mds-text-muted: #64748B;
+  --mds-border: #E5E7EB;
+  --mds-action: #2563EB; /* readable white text: contrast ~5.17:1 */
+  --mds-action-hover: #1D4ED8;
+  --mds-selected: #EFF6FF;
+  --mds-font-ui: Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Microsoft YaHei', 'Noto Sans CJK SC', 'Segoe UI', system-ui, sans-serif;
+
+  background: var(--mds-canvas);
+  color: var(--mds-text);
+  font-family: var(--mds-font-ui);
+}
+.mdstudio-theme[data-theme="dark"] {
+  --mds-surface: #111D30;
+  --mds-canvas: #0B1220;
+  --mds-text: #F8FAFC;
+  --mds-text-muted: #BAC6D7;
+  --mds-border: #263247;
+  --mds-selected: #182D4C;
+  --mds-action: #2563EB;
+  --mds-action-hover: #1D4ED8;
+}
+.mdstudio-theme .mdstudio-reader {
+  max-width: 860px;
+  margin-inline: auto;
+  padding-inline: clamp(20px, 4vw, 56px);
+  line-height: 1.7;
+}
+.mdstudio-theme :focus-visible {
+  outline: 2px solid var(--mds-brand-blue);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mdstudio-theme *, .mdstudio-theme *::before, .mdstudio-theme *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

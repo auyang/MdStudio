@@ -1,0 +1,43 @@
+[package]
+name = "mdstudio"
+version = "0.1.8"
+description = "MdStudio 只读 Markdown 桌面阅读器"
+authors = ["MdStudio"]
+edition = "2021"
+rust-version = "1.90"
+
+[lib]
+name = "mdstudio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+perf-benchmark = []
+
+[build-dependencies]
+tauri-build = { version = "2.7.2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+blake3 = "1.8"
+ammonia = "4.2.3"
+comrak = { version = "0.54.0", default-features = false, features = ["syntect-fancy"] }
+percent-encoding = "2.3"
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2.12.3", features = [] }
+tauri-plugin-dialog = "2.8.2"
+tauri-plugin-opener = "2.7.2"
+thiserror = "2.0"
+notify = "8.2.0"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2.5.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSPrintInfo", "NSPrintOperation", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSURL", "NSString", "NSValue"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "0.39.1"
+windows = { version = "0.62.2", features = ["Win32_Foundation"] }
