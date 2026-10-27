@@ -189,7 +189,7 @@ fn export_windows(window: &WebviewWindow, destination: PathBuf) -> Result<(), St
     use std::sync::mpsc;
     use webview2_com::{
         Microsoft::Web::WebView2::Win32::{
-            ICoreWebView2Environment6, ICoreWebView2PrintSettings, ICoreWebView2_7,
+            ICoreWebView2Environment6, ICoreWebView2_7,
             COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT,
         },
         PrintToPdfCompletedHandler,
@@ -246,7 +246,7 @@ fn export_windows(window: &WebviewWindow, destination: PathBuf) -> Result<(), St
 
                 PrintToPdfCompletedHandler::wait_for_async_operation(
                     Box::new(move |handler| unsafe {
-                        core.PrintToPdf(&path, Some(&print_settings), handler)
+                        core.PrintToPdf(&path, Some(&print_settings), &handler)
                             .map_err(Into::into)
                     }),
                     Box::new(|status, succeeded| {

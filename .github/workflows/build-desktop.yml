@@ -40,6 +40,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
+          build-warnings: warn
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile

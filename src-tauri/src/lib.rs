@@ -23,7 +23,7 @@ pub(crate) fn application_menu_for_locale<R: tauri::Runtime>(
 ) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
-    let (about_label, file_label, edit_label, view_label, window_label, help_label) = match locale {
+    let (about_label, file_label, edit_label, _view_label, window_label, help_label) = match locale {
         "en" => ("About MdStudio", "File", "Edit", "View", "Window", "Help"),
         "ja" => (
             "MdStudio について",
@@ -93,7 +93,7 @@ pub(crate) fn application_menu_for_locale<R: tauri::Runtime>(
     #[cfg(target_os = "macos")]
     let view_menu = Submenu::with_items(
         app,
-        view_label,
+        _view_label,
         true,
         &[&PredefinedMenuItem::fullscreen(app, None)?],
     )?;
@@ -256,14 +256,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("启动 MdStudio 时发生错误");
 
-    app.run(|handle, event| {
+    app.run(|_handle, _event| {
         #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
-        if let tauri::RunEvent::Opened { urls } = event {
+        if let tauri::RunEvent::Opened { urls } = _event {
             for url in urls {
                 if let Ok(path) = url.to_file_path() {
                     if path.is_file() && is_markdown_file(&path) {
                         if let Ok(path) = path.canonicalize() {
-                            enqueue_open_file(handle, path.to_string_lossy().into_owned());
+                            enqueue_open_file(_handle, path.to_string_lossy().into_owned());
                         }
                     }
                 }
