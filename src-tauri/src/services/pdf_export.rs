@@ -256,7 +256,7 @@ fn export_windows(window: &WebviewWindow, destination: PathBuf) -> Result<(), St
                         } else {
                             Err(Error::new(
                                 HRESULT(0x8000_4005_u32 as i32),
-                                "WebView2 could not create the PDF".into(),
+                                "WebView2 could not create the PDF",
                             ))
                         }
                     }),

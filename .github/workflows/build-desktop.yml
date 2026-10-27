@@ -41,6 +41,7 @@ jobs:
         with:
           toolchain: stable
           build-warnings: warn
+          cache: false
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
