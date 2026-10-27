@@ -29,6 +29,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      }
+    },
     "fileAssociations": [
       {
         "ext": ["md", "markdown"],
