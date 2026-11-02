@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { open } from '@tauri-apps/plugin-dialog'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import { App } from './App'
 import { READER_STORAGE_KEYS } from '../features/reader/preferences'
 
@@ -13,13 +13,32 @@ const tauri = vi.hoisted(() => ({
   onDragDropEvent: vi.fn(),
 }))
 const mermaidModuleState = vi.hoisted(() => ({ loaded: false }))
+const mathRenderingState = vi.hoisted(() => ({
+  defer: false,
+  release: null as null | (() => Promise<void>),
+}))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke, isTauri: tauri.isTauri }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }))
 vi.mock('@tauri-apps/api/webview', () => ({
   getCurrentWebview: () => ({ onDragDropEvent: tauri.onDragDropEvent }),
 }))
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }))
+vi.mock('../components/reader/mathRendering', async importOriginal => {
+  const actual = await importOriginal<typeof import('../components/reader/mathRendering')>()
+  return {
+    ...actual,
+    renderReaderMath: (...args: Parameters<typeof actual.renderReaderMath>) => {
+      if (!mathRenderingState.defer) return actual.renderReaderMath(...args)
+      return new Promise<void>(resolve => {
+        mathRenderingState.release = async () => {
+          await actual.renderReaderMath(...args)
+          resolve()
+        }
+      })
+    },
+  }
+})
 vi.mock('../components/reader/MermaidDiagram', async () => {
   const { createElement } = await import('react')
   mermaidModuleState.loaded = true
@@ -81,6 +100,10 @@ describe('MdStudio Reader UI', () => {
     tauri.listen.mockReset()
     tauri.onDragDropEvent.mockReset()
     vi.mocked(open).mockReset()
+    vi.mocked(save).mockReset()
+    vi.mocked(save).mockResolvedValue('/tmp/formula.pdf')
+    mathRenderingState.defer = false
+    mathRenderingState.release = null
     tauri.listen.mockResolvedValue(vi.fn())
     tauri.onDragDropEvent.mockResolvedValue(vi.fn())
     Object.defineProperty(window, 'scrollTo', { configurable: true, value: vi.fn() })
@@ -134,6 +157,63 @@ describe('MdStudio Reader UI', () => {
     expect(host.querySelector('input[aria-label="搜索本文"]')).not.toBeNull()
     await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(host.querySelector('input[aria-label="搜索本文"]')).toBeNull()
+  })
+
+  it('显示公式原文复制入口并复制未改写的 LaTeX', async () => {
+    const formulaDocument = {
+      ...sampleDocument,
+      html: '<h1 id="mdstudio-math">公式</h1><p><span data-math-style="inline">x^2+1</span></p>',
+      headings: [{ id: 'mdstudio-math', text: '公式', level: 1 }],
+    }
+    tauri.isTauri.mockReturnValue(true)
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'take_pending_open_files') return ['/tmp/math.md']
+      if (command === 'normalize_reader_path') return '/tmp/math.md'
+      if (command === 'load_reader_document') return formulaDocument
+      return null
+    })
+    const clipboardWriteText = vi.fn().mockResolvedValue(undefined)
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: clipboardWriteText } })
+
+    try {
+      await renderApp()
+      await act(async () => new Promise(resolve => setTimeout(resolve, 250)))
+      const copyButton = host.querySelector<HTMLButtonElement>('[data-copy-math]')
+      expect(copyButton).not.toBeNull()
+      await act(async () => copyButton?.click())
+      expect(clipboardWriteText).toHaveBeenCalledWith('x^2+1')
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    }
+  })
+
+  it('PDF 导出会等待公式渲染完成', async () => {
+    const formulaDocument = {
+      ...sampleDocument,
+      html: '<h1 id="mdstudio-math">公式</h1><p><span data-math-style="inline">x^2+1</span></p>',
+      headings: [{ id: 'mdstudio-math', text: '公式', level: 1 }],
+    }
+    mathRenderingState.defer = true
+    tauri.isTauri.mockReturnValue(true)
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'take_pending_open_files') return ['/tmp/math.md']
+      if (command === 'normalize_reader_path') return '/tmp/math.md'
+      if (command === 'load_reader_document') return formulaDocument
+      return null
+    })
+    await renderApp()
+
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="导出 PDF"]')?.click())
+    await act(async () => new Promise(resolve => setTimeout(resolve, 30)))
+    expect(tauri.invoke).not.toHaveBeenCalledWith('export_reader_pdf', expect.anything())
+    expect(mathRenderingState.release).not.toBeNull()
+
+    await act(async () => mathRenderingState.release?.())
+    await act(async () => new Promise(resolve => setTimeout(resolve, 30)))
+    expect(host.querySelector('.reader-article .katex')).not.toBeNull()
+    expect(tauri.invoke).toHaveBeenCalledWith('export_reader_pdf', { filePath: '/tmp/formula.pdf' })
   })
 
   it('实时搜索跨格式文本，支持键盘循环与无结果状态且不改写正文 DOM', async () => {

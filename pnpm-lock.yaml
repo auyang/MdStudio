@@ -20,6 +20,9 @@ importers:
       dompurify:
         specifier: 3.4.17
         version: 3.4.17
+      katex:
+        specifier: 0.16.47
+        version: 0.16.47
       lucide-react:
         specifier: ^1.61.0
         version: 1.61.0(@types/react@19.3.0)(react@19.3.1)

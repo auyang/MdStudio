@@ -16,6 +16,7 @@ import { AppHeader } from '../components/layout/AppHeader'
 import { ReadingWidthPicker } from '../components/layout/ReadingWidthPicker'
 import { MediaViewerDialog } from '../components/reader/MediaViewer'
 import type { MediaViewerContent } from '../components/reader/MediaViewer'
+import { renderReaderMath } from '../components/reader/mathRendering'
 import { SettingsDialog } from '../components/reader/SettingsDialog'
 import type { SettingsSection } from '../components/reader/SettingsDialog'
 import { SearchHighlightCanvas } from '../components/reader/SearchHighlightCanvas'
@@ -351,6 +352,11 @@ function localizeReaderArticle(article: HTMLElement, locale: AppLocale) {
       if (kind === 'image-zoom') element.textContent = t('放大查看')
     } else if (kind === 'image-retry') {
       element.textContent = t('重试')
+    } else if (kind === 'math-error') {
+      element.textContent = t(element.dataset.readerMathErrorMessage || '公式语法无法解析，已保留 LaTeX 源码。')
+    } else if (kind === 'copy-math') {
+      element.setAttribute('aria-label', t('复制 LaTeX 公式'))
+      element.setAttribute('title', t('复制 LaTeX 公式'))
     }
   }
 }
@@ -436,6 +442,7 @@ export function App() {
   const openBatchSequence = useRef(0)
   const watcherQueue = useRef(Promise.resolve())
   const articleRef = useRef<HTMLElement>(null)
+  const mathRenderingRef = useRef<Promise<void>>(Promise.resolve())
   const headingElementsRef = useRef<HeadingElements>(null)
   const tocNavRef = useRef<HTMLElement>(null)
   const scrollPositionTimer = useRef<number | undefined>(undefined)
@@ -445,6 +452,8 @@ export function App() {
   const searchRequestSequence = useRef(0)
   const searchScrollFrame = useRef<number | undefined>(undefined)
   const locale: AppLocale = settings.locale ?? DEFAULT_APP_LOCALE
+  const localeRef = useRef(locale)
+  localeRef.current = locale
   const t = (source: string, values?: Record<string, string | number>) => translate(locale, source, values)
   const actualTheme = settings.theme === 'system' ? (systemDark ? 'dark' : 'light') : settings.theme
   const tabs = tabState.tabs
@@ -1289,6 +1298,7 @@ export function App() {
     let cursor = 0
     let blockCount = 0
     let headingIndexMs = 0
+    mathRenderingRef.current = Promise.resolve()
     const deferredContent = article.ownerDocument.createDocumentFragment()
     article.replaceChildren()
     headingElementsRef.current = []
@@ -1298,6 +1308,11 @@ export function App() {
       const indexed = Array.from(root.querySelectorAll<HTMLElement>(headingsQuery))
       headingElementsRef.current?.push(...indexed)
       headingIndexMs += performance.now() - indexStartedAt
+    }
+
+    const renderMath = (root: ParentNode) => {
+      const renderTask = renderReaderMath(root, () => localeRef.current, () => cancelled)
+      mathRenderingRef.current = Promise.all([mathRenderingRef.current, renderTask]).then(() => undefined)
     }
 
     const recordFirstReadable = () => {
@@ -1342,6 +1357,7 @@ export function App() {
 
     if (!progressive) {
       article.innerHTML = html
+      renderMath(article)
       indexHeadings(article)
       blockCount = 1
       recordPerformance('document-content-first-batch', {
@@ -1374,6 +1390,7 @@ export function App() {
         const template = article.ownerDocument.createElement('template')
         template.innerHTML = html.slice(batchStart, cursor)
         indexHeadings(template.content)
+        renderMath(template.content)
         if (isFirstBatch) article.append(template.content)
         else deferredContent.append(template.content)
 
@@ -1907,6 +1924,26 @@ export function App() {
       }
       return
     }
+    const copyMathButton = target.closest<HTMLButtonElement>('[data-copy-math]')
+    if (copyMathButton) {
+      event.preventDefault()
+      try {
+        await navigator.clipboard.writeText(copyMathButton.dataset.readerMathSource ?? '')
+        copyMathButton.dataset.copied = 'true'
+        copyMathButton.setAttribute('aria-label', t('公式已复制'))
+        copyMathButton.setAttribute('title', t('公式已复制'))
+        setNotice('公式已复制')
+        window.setTimeout(() => {
+          if (!copyMathButton.isConnected) return
+          delete copyMathButton.dataset.copied
+          copyMathButton.setAttribute('aria-label', t('复制 LaTeX 公式'))
+          copyMathButton.setAttribute('title', t('复制 LaTeX 公式'))
+        }, 1400)
+      } catch {
+        setError(t('无法访问系统剪贴板，请手动选择公式源码复制。'))
+      }
+      return
+    }
     const link = target.closest<HTMLAnchorElement>('a[href]')
     if (!link) return
     const href = link.getAttribute('href') || ''
@@ -1975,6 +2012,15 @@ export function App() {
     document.title = `${documentBaseName} — MdStudio`
     try {
       await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      let mathTimeout: number | undefined
+      const mathReady = await Promise.race([
+        mathRenderingRef.current.then(() => true),
+        new Promise<boolean>(resolve => {
+          mathTimeout = window.setTimeout(() => resolve(false), 30_000)
+        }),
+      ])
+      if (mathTimeout !== undefined) window.clearTimeout(mathTimeout)
+      if (!mathReady) throw new Error(t('公式渲染超过 30 秒，已取消 PDF 导出。'))
       await document.fonts?.ready
 
       const images = Array.from(article.querySelectorAll<HTMLImageElement>('img[data-reader-image="true"]'))
@@ -2004,7 +2050,11 @@ export function App() {
       const exportedName = filePath.split(/[\\/]/).filter(Boolean).at(-1) || `${documentBaseName}.pdf`
       setNotice(t('PDF 已保存：{name}', { name: exportedName }))
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : 'PDF 导出失败，请检查目标位置后重试。'
+      const message = reason instanceof Error
+        ? reason.message
+        : typeof reason === 'string'
+          ? reason
+          : 'PDF 导出失败，请检查目标位置后重试。'
       setError(message)
     } finally {
       document.title = previousTitle

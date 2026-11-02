@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) · [English](README.md) · [日本語](README.ja.md)
 
-**MdStudio v0.1.8** is a lightweight, read-only Markdown desktop reader. Open a document and start reading, with multi-tab navigation, technical-document rendering, and local reading preferences.
+**MdStudio v0.1.9** is a lightweight, read-only Markdown desktop reader. Open a document and start reading, with multi-tab navigation, technical-document rendering, and local reading preferences.
 
 > Open and read. Simple, fast, focused.
 
@@ -26,13 +26,14 @@
 
 - Open `.md` and `.markdown` files using the file picker, drag and drop, or the operating system's Open With flow. Read multiple documents in one window.
 - Read CommonMark and GFM content, including headings, lists, task lists, tables, quotes, links, images, and code blocks with locally bundled syntax highlighting.
+- Render inline and block LaTeX formulas (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`) with locally bundled KaTeX; copy the original LaTeX from any formula.
 - View Mermaid diagrams by default, inspect or copy their source, and zoom, pan, or fit them to the window.
 - Read local document assets. Relative images are loaded only from within the document directory; tables and code blocks scroll independently when needed.
 - Navigate with the table of contents, in-document search, and back/forward history. Each tab keeps its own search state and reading position.
 - Choose light, dark, or system theme; adjust font size and reading width, including Fit to screen.
 - Use the interface in English, Simplified Chinese, or Japanese.
 - Restore the previous tabs, remember reading positions, and manage recent files in Settings.
-- A4 portrait PDF export is implemented for macOS and Windows code paths. Exported pages hide the reader toolbar, headers, and footers. Windows runtime behavior has not been verified in the current project report; direct PDF export is not implemented for Linux.
+- A4 portrait PDF export is implemented for macOS and Windows code paths. Export waits for formulas and local fonts before printing; pages hide the reader toolbar, headers, and footers. Windows runtime behavior has not been verified in the current project report; direct PDF export is not implemented for Linux.
 
 ## Security and data boundaries
 

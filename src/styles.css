@@ -194,6 +194,23 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .reader-article h4 { margin: 1.5em 0 .6em; font-size: 1.06em; }
 .reader-article h5, .reader-article h6 { margin: 1.4em 0 .55em; font-size: 1em; }
 .reader-article p { margin: 1em 0; }
+.reader-article .reader-math { color: var(--text); }
+.reader-article .reader-math-wrap { position: relative; }
+.reader-article .reader-math-wrap-inline { display: inline; white-space: nowrap; }
+.reader-article .reader-math-wrap-display { display: block; max-width: 100%; margin: 1.15em 0; overflow-x: auto; overflow-y: hidden; line-height: normal; text-align: center; }
+.reader-article span.reader-math[data-math-style="inline"] { display: inline; padding: 0 .04em; white-space: nowrap; }
+.reader-article span.reader-math[data-math-style="display"] { display: block; max-width: 100%; line-height: normal; text-align: center; }
+.reader-article span.reader-math[data-math-style="display"] .katex-display { width: max-content; min-width: 100%; margin: 0; padding: .45em 0; }
+.reader-math-copy { position: absolute; z-index: 1; top: 2px; right: 2px; width: 23px; height: 23px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 5px; padding: 0; background: var(--surface); color: var(--text-secondary); font: 13px/1 var(--font-sans, sans-serif); opacity: 0; cursor: pointer; transition: opacity 120ms ease, color 120ms ease; }
+.reader-math-wrap:hover .reader-math-copy, .reader-math-copy:focus-visible, .reader-math-copy[data-copied="true"] { opacity: 1; }
+.reader-math-copy:hover { color: var(--action-blue); }
+.reader-article pre.reader-math-pre { margin: 1.15em 0; padding: 8px 42px 8px 10px; overflow-x: auto; overflow-y: hidden; border: 0; background: transparent; color: var(--text); line-height: normal; }
+.reader-article pre.reader-math-pre code { display: block; width: max-content; min-width: 100%; margin: auto; text-align: center; }
+.reader-article .reader-math-error { color: var(--text-soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+.reader-article .reader-math-error-label { display: inline-block; margin-left: .55em; color: #b45309; font-family: var(--font-sans, inherit); font-size: .78em; white-space: normal; }
+.reader-article span[data-math-style="display"].reader-math-error { display: block; max-width: 100%; margin: 1.15em 0; overflow-x: auto; }
+.reader-article [data-math-style="display"].reader-math-error .reader-math-error-label { display: block; margin: .45em 0 0; }
+:root[data-theme="dark"] .reader-article .reader-math-error-label { color: #fbbf24; }
 .reader-article a { color: var(--action-blue); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--action-blue) 34%, transparent); text-underline-offset: 3px; }
 .reader-article a:hover { text-decoration-color: currentColor; }
 .reader-article strong { font-weight: 700; }
@@ -504,6 +521,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .reader-mermaid-viewer-backdrop,
   .reader-mermaid-toolbar,
   .reader-code-copy,
+  .reader-math-copy,
   .reader-image-zoom,
   .reader-image-retry,
   .reader-image-pending:not(.is-error) { display: none !important; }
@@ -526,6 +544,8 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .reader-article td,
   .reader-article th { color: #1f2937 !important; }
   .reader-article a { color: #1d4ed8 !important; }
+  .reader-article .reader-math-wrap-display { overflow: visible; break-inside: avoid; page-break-inside: avoid; }
+  .reader-article .reader-math-wrap-display .reader-math { overflow: visible; }
   .reader-article pre { max-width: 100%; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; color: #111827 !important; background: #f1f5f9 !important; border-color: #cbd5e1 !important; }
   .reader-article table { display: table; width: 100%; max-width: 100%; overflow: visible; table-layout: fixed; border-collapse: collapse; break-inside: auto; font-size: 9pt; }
   .reader-article thead { display: table-header-group; }

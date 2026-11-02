@@ -206,8 +206,15 @@ pub fn set_application_locale(locale: String, app: AppHandle) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn export_reader_pdf(file_path: String, window: tauri::WebviewWindow) -> Result<(), String> {
-    crate::services::pdf_export::export(&window, file_path)
+pub async fn export_reader_pdf(
+    file_path: String,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::pdf_export::export(&window, file_path)
+    })
+    .await
+    .map_err(|_| "PDF 导出任务异常终止。".to_string())?
 }
 
 pub fn is_markdown_file(path: &Path) -> bool {

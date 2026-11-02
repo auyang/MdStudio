@@ -2188,7 +2188,7 @@ dependencies = [
 
 [[package]]
 name = "mdstudio"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ammonia",
  "base64 0.22.1",

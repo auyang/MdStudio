@@ -150,6 +150,8 @@ pub fn load_document(file_path: &str) -> Result<ReaderDocument, ReaderError> {
     options.extension.tasklist = true;
     options.extension.autolink = true;
     options.extension.tagfilter = true;
+    options.extension.math_dollars = true;
+    options.extension.math_latex = true;
     options.extension.front_matter_delimiter = Some("---".to_string());
     options.extension.header_id_prefix = Some(HEADING_PREFIX.to_string());
     options.extension.header_id_prefix_in_href = true;
@@ -238,6 +240,9 @@ pub fn load_document(file_path: &str) -> Result<ReaderDocument, ReaderError> {
     sanitizer
         .add_generic_attributes(&["id", "class"])
         .add_tags(&["input"])
+        .add_tag_attributes("span", &["data-math-style"])
+        .add_tag_attributes("code", &["data-math-style"])
+        .add_tag_attributes("pre", &["data-math-style"])
         .add_tag_attributes("input", &["type", "checked", "disabled"])
         .add_tag_attribute_values("input", "type", &["checkbox"])
         .url_schemes(
@@ -844,6 +849,12 @@ mod tests {
             .join(name)
     }
 
+    fn math_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/math")
+            .join(name)
+    }
+
     fn project_fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../tests")
@@ -920,6 +931,37 @@ mod tests {
         let document = load_document(fixture("code-blocks.md").to_str().unwrap()).unwrap();
         assert!(document.html.contains("language-rust"));
         assert!(document.html.contains("class=\""));
+    }
+
+    #[test]
+    fn math_extensions_keep_formula_markers_and_leave_prices_and_code_untouched() {
+        let document = load_document(math_fixture("formulas.md").to_str().unwrap()).unwrap();
+        assert!(document.html.contains("data-math-style=\"inline\""));
+        assert!(document.html.contains("data-math-style=\"display\""));
+        assert_eq!(document.html.matches("data-math-style").count(), 5);
+        assert!(document.html.contains("\u{24}99"));
+        assert!(document.html.contains("\u{24}1,299.00"));
+        assert!(document.html.contains("\u{24}50"));
+        assert!(document.html.contains("\\begin{aligned}"));
+        assert!(document.html.contains("\\int_0^1"));
+        assert!(document.html.contains("\\begin{bmatrix}"));
+        assert!(document.html.contains("\\frac{1}{"));
+        assert!(document.html.contains("language-latex"));
+        let latex_code = document
+            .html
+            .split_once("class=\"language-latex\"")
+            .unwrap()
+            .1;
+        let latex_code = latex_code.split_once("</code>").unwrap().0;
+        assert!(!latex_code.contains("data-math-style"));
+        assert!(latex_code.contains("punctuation definition string begin latex"));
+    }
+
+    #[test]
+    fn large_math_fixture_parses_without_dropping_formula_nodes() {
+        let document = load_document(math_fixture("large-document.md").to_str().unwrap()).unwrap();
+        assert!(document.html.matches("data-math-style=\"display\"").count() >= 200);
+        assert!(document.html.contains("mdstudio-大型数学文档"));
     }
 
     #[test]
