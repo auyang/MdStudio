@@ -1,16 +1,16 @@
 # MdStudio
 
-[简体中文](README.zh-CN.md) · [English](README.md) · [日本語](README.ja.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
-**MdStudio v0.1.9** is a lightweight, read-only Markdown desktop reader. Open a document and start reading, with multi-tab navigation, technical-document rendering, and local reading preferences.
+**MdStudio v0.2.0** is a local, read-only desktop reader for Markdown, PDF, and OFD documents. Open a file and start reading, with multi-tab navigation and a focused reading interface.
 
-> Open and read. Simple, fast, focused.
+> Just read Markdown. Open a document and start reading.
 
-![MdStudio English interface](docs/screenshots/mdstudio-home-en.png)
+![MdStudio English home screen](docs/screenshots/mdstudio-home-en.png)
 
 ## Screenshots
 
-### Markdown reader
+### Markdown reading
 
 ![MdStudio Markdown reader in English](docs/screenshots/mdstudio-reader-en.png)
 
@@ -22,32 +22,44 @@
 
 ![About MdStudio in English](docs/screenshots/mdstudio-about-en.png)
 
-## Features
+## Document formats
 
-- Open `.md` and `.markdown` files using the file picker, drag and drop, or the operating system's Open With flow. Read multiple documents in one window.
-- Read CommonMark and GFM content, including headings, lists, task lists, tables, quotes, links, images, and code blocks with locally bundled syntax highlighting.
-- Render inline and block LaTeX formulas (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`) with locally bundled KaTeX; copy the original LaTeX from any formula.
-- View Mermaid diagrams by default, inspect or copy their source, and zoom, pan, or fit them to the window.
-- Read local document assets. Relative images are loaded only from within the document directory; tables and code blocks scroll independently when needed.
-- Navigate with the table of contents, in-document search, and back/forward history. Each tab keeps its own search state and reading position.
-- Choose light, dark, or system theme; adjust font size and reading width, including Fit to screen.
+| Format | Reading support | Notes |
+| --- | --- | --- |
+| Markdown (`.md`, `.markdown`) | Markdown/GFM, code highlighting, Mermaid, KaTeX formulas, GitHub Alerts, local images and links | Read-only; preserves the source file. |
+| PDF (`.pdf`) | Continuous pages, page navigation, zoom, rotation, text selection, search, thumbnails and available outline | PDF.js and its worker and supporting resources are bundled locally. Scanned documents have no OCR; encrypted PDFs have no password prompt. |
+| OFD (`.ofd`) | Local page viewing, navigation, zoom, rotation, thumbnails and text-layer search when text is available | Compatibility is experimental. Missing fonts can leave Chinese text blank. System font substitution helps some files, but no bundled Chinese fallback font is included. Signatures are displayed but never verified. |
+
+The file picker, drag and drop, and mixed-format tabs are available in the current app. System file association and Windows/Linux behavior have not been verified across platforms.
+
+## Reading features
+
+- Open multiple documents in one window. Each tab keeps its own reading position and search state.
+- Navigate Markdown with a table of contents, in-document search, and back/forward reading history. PDF and OFD use page navigation and show thumbnails or an outline when available.
+- Choose light, dark, or system theme; adjust Markdown font size and reading width, including Fit to screen.
 - Use the interface in English, Simplified Chinese, or Japanese.
-- Restore the previous tabs, remember reading positions, and manage recent files in Settings.
-- A4 portrait PDF export is implemented for macOS and Windows code paths. Export waits for formulas and local fonts before printing; pages hide the reader toolbar, headers, and footers. Windows runtime behavior has not been verified in the current project report; direct PDF export is not implemented for Linux.
+- Restore tabs, remember reading positions, and manage recent files in Settings.
+- Render Mermaid diagrams and LaTeX formulas with local assets; no CDN is required.
+
+## Known limitations
+
+- OFD compatibility is incomplete. Some documents still lose text when their declared fonts or glyphs are unavailable. Encrypted OFD files are unsupported, and signature validity is not checked.
+- Markdown-to-PDF export is separate from PDF reading and has a known issue: it may become unresponsive or fail on some documents.
+- Windows and Linux have not yet received the same desktop verification as macOS.
 
 ## Security and data boundaries
 
-MdStudio is read-only: it does not edit or save Markdown files or modify images. Reading preferences, tab sessions, recent-file paths, and reading positions stay on the local machine; document contents are not cached.
+MdStudio does not edit Markdown, PDF, OFD, images, or attachments. Reading preferences, tab sessions, recent-file paths, and reading positions stay on the local machine. Documents are not uploaded and the app uses no cloud service or database.
 
-Markdown HTML is sanitized with an allowlist. Scripts do not run, and unsafe URLs are removed. Relative images are checked against the document-directory boundary and supported file types. Remote images are not loaded. HTTPS links are opened in the system browser only after the user clicks them. Documents are not uploaded, and the app does not use cloud services or a database.
+Markdown HTML is sanitized with an allowlist. Scripts do not run, unsafe URLs are removed, and remote images are not loaded. Relative resources are checked against the document directory. HTTPS links open in the system browser only after the user clicks them. PDF.js, Mermaid, KaTeX, and OFD viewer resources are bundled with the app for offline use.
 
 MdStudio does not include a Markdown editor, AI chat, workspace management, accounts, cloud sync, or a plugin system.
 
 ## Install and run
 
-### Use the built macOS app
+### Use the macOS app bundle
 
-The app bundle is generated at:
+Build the app bundle at:
 
 ```text
 src-tauri/target/release/bundle/macos/MdStudio.app
@@ -62,7 +74,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-Build a desktop app for the current platform:
+Build the desktop app for the current platform:
 
 ```bash
 pnpm tauri build
@@ -83,21 +95,20 @@ The frontend production build is `pnpm build`.
 | Open a file | `⌘/Ctrl + O` |
 | Close the current tab | `⌘/Ctrl + W` |
 | Search this document | `⌘/Ctrl + F` |
-| Reset font size | `⌘/Ctrl + 0` |
+| Reset Markdown font size or page zoom | `⌘/Ctrl + 0` |
 | Switch tabs | `Ctrl + Tab` / `Ctrl + Shift + Tab` |
 | Settings | `⌘/Ctrl + ,` |
 | Back/forward in reading history | `⌘ + [` / `⌘ + ]`; `Alt + ←` / `Alt + →` on Windows and Linux |
 
-Shortcuts can vary by platform. The top toolbar also provides file, search, table-of-contents, theme, refresh, and reading-history controls.
+Shortcuts can vary by platform. The top toolbar also provides document, search, navigation, theme, refresh, and reading-history controls.
 
 ## Technology
 
 - Desktop: Rust, Tauri 2
 - Markdown: Comrak, Syntect, Ammonia
+- PDF: PDF.js (`pdfjs-dist`)
+- OFD: OFDRW Viewer UI and Engine
 - UI: React, TypeScript, Tailwind CSS, Vite
-- Diagrams: Mermaid loaded on demand; SVG sanitized with DOMPurify
-
-Mermaid and other runtime assets are bundled locally; no CDN is required.
 
 ## License
 
