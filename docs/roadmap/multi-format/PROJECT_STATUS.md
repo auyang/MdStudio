@@ -1,7 +1,7 @@
 # MdStudio 多格式阅读器路线状态
 
 current_phase: P5-A macOS Native Window Fusion
-target_version: 0.1.9（本阶段不改软件版本）
+target_version: 0.2.0
 p3_decision: GO_A_CONDITIONAL
 p4_user_acceptance: accepted（2026-11-03）
 status: awaiting_acceptance（仅 P5-A；P5 总阶段仍阻塞）

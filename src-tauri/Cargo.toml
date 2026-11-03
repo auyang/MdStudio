@@ -1,6 +1,6 @@
 [package]
 name = "mdstudio"
-version = "0.1.9"
+version = "0.2.0"
 description = "MdStudio 只读 Markdown 桌面阅读器"
 authors = ["MdStudio"]
 edition = "2021"
