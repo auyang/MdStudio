@@ -19,15 +19,20 @@ tauri-build = { version = "2.7.2", features = [] }
 [dependencies]
 base64 = "0.22"
 blake3 = "1.8"
+crc32fast = "1.5.3"
 ammonia = "4.2.3"
 comrak = { version = "0.54.0", default-features = false, features = ["syntect-fancy"] }
+flate2 = "1.1.10"
 percent-encoding = "2.3"
+quick-xml = "0.42.0"
 serde = { version = "1.0", features = ["derive"] }
 tauri = { version = "2.12.3", features = [] }
 tauri-plugin-dialog = "2.8.2"
 tauri-plugin-opener = "2.7.2"
 thiserror = "2.0"
 notify = "8.2.0"
+fontdb = "0.24.0"
+ttf-parser = "0.25.1"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2.5.4"

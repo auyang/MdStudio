@@ -14,15 +14,20 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
+  RotateCw,
   Search,
   Settings2,
   Sun,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react'
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode, RefObject } from 'react'
+import { isTauri } from '@tauri-apps/api/core'
 import type { ReaderTabStatus } from '../../features/reader/tabs'
 import type { ThemePreference } from '../../features/reader/preferences'
+import type { DocumentType } from '../../features/documents/core/types'
 import { useI18n } from '../../features/i18n'
 
 export type HeaderTab = {
@@ -31,6 +36,7 @@ export type HeaderTab = {
   displayName: string
   status: ReaderTabStatus
   stale: boolean
+  documentType: DocumentType
 }
 
 type AppHeaderProps = {
@@ -44,14 +50,34 @@ type AppHeaderProps = {
   searchCount: number
   searchPending: boolean
   tocOpen: boolean
+  canToggleNavigation: boolean
+  canSearch: boolean
+  navigationLabel: string
+  activeDocumentType: DocumentType | null
   theme: ThemePreference
   doubleClickToClose: boolean
   searchInputRef: RefObject<HTMLInputElement | null>
+  searchToggleRef: RefObject<HTMLButtonElement | null>
   canGoBack: boolean
   canGoForward: boolean
   navigationBusy: boolean
   canExportPdf: boolean
   exportingPdf: boolean
+  pagedControls?: {
+    documentType: 'pdf' | 'ofd'
+    page: number
+    pageCount: number
+    scale: number
+    minScale: number
+    maxScale: number
+    onPageChange: (page: number) => void
+    onZoomIn: () => void
+    onZoomOut: () => void
+    onFitWidth: () => void
+    onFitPage: () => void
+    onRotate: () => void
+    onResetZoom: () => void
+  }
   onGoBack: () => void
   onGoForward: () => void
   onExportPdf: () => void
@@ -97,14 +123,20 @@ export function AppHeader({
   searchCount,
   searchPending,
   tocOpen,
+  canToggleNavigation,
+  canSearch,
+  navigationLabel,
+  activeDocumentType,
   theme,
   doubleClickToClose,
   searchInputRef,
+  searchToggleRef,
   canGoBack,
   canGoForward,
   navigationBusy,
   canExportPdf,
   exportingPdf,
+  pagedControls,
   onGoBack,
   onGoForward,
   onExportPdf,
@@ -124,6 +156,7 @@ export function AppHeader({
   onCloseTab,
 }: AppHeaderProps) {
   const t = useI18n()
+  const isMacWindow = isTauri() && /Macintosh|Mac OS/i.test(navigator.userAgent)
   const tabsScrollRef = useRef<HTMLDivElement>(null)
   const moreMenuRef = useRef<HTMLDetailsElement>(null)
   const tabClickTimers = useRef(new Map<string, number>())
@@ -192,10 +225,10 @@ export function AppHeader({
   }
 
   return (
-    <header className="reader-topbar" onClickCapture={event => {
+    <header className={'reader-topbar' + (isMacWindow ? ' is-macos' : '')} data-tauri-drag-region={isMacWindow ? 'deep' : undefined} onClickCapture={event => {
       if (!(event.target as HTMLElement).closest('.reader-tab')) clearPendingTabClicks()
     }}>
-      <div className="brand-area">
+      <div className="brand-area" data-tauri-drag-region={isMacWindow ? '' : undefined}>
         <a className="brand-home" href="#home" aria-label={t('MdStudio 首页')} onClick={event => {
           event.preventDefault()
           window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -203,7 +236,7 @@ export function AppHeader({
       </div>
 
       <div className="reader-tabs">
-        <div ref={tabsScrollRef} className={'reader-tabs-scroll' + (tabs.length > 1 ? ' has-multiple-tabs' : '')} role="tablist" aria-label={t('打开的 Markdown 文档')}>
+        <div ref={tabsScrollRef} className={'reader-tabs-scroll' + (tabs.length > 1 ? ' has-multiple-tabs' : '')} data-tauri-drag-region={isMacWindow ? '' : undefined} role="tablist" aria-label={t('打开的文档')}>
           {tabs.map((tab, index) => <div className={'reader-tab-item' + (tab.id === activeTabId ? ' is-active' : '')} key={tab.id}>
               <button
               type="button"
@@ -267,14 +300,15 @@ export function AppHeader({
         <button
           type="button"
           className="reader-tabs-add"
-          aria-label={t('打开 Markdown 文件（Ctrl/Cmd+O）')}
-          title={t('打开 Markdown 文件（Ctrl/Cmd+O）')}
+          aria-label={t('打开文档（Ctrl/Cmd+O）')}
+          title={t('打开文档（Ctrl/Cmd+O）')}
           onClick={event => { if (event.detail <= 1) onOpenFile() }}
           onDoubleClick={event => { event.preventDefault(); event.stopPropagation() }}
         ><Plus size={16} /></button>
       </div>
 
       <div className="topbar-actions">
+        {pagedControls && <PagedToolbar {...pagedControls} compactForMac={isMacWindow} />}
         {searchOpen && <div className={'search-box' + (searchPending ? ' is-pending' : '')} role="search" aria-label={t('搜索当前文档')}>
           <Search size={15} aria-hidden="true" />
           <input ref={searchInputRef} type="search" autoComplete="off" spellCheck={false} enterKeyHint="search" value={searchQuery} onChange={event => onSearchQueryChange(event.target.value)} onKeyDown={onSearchKeyDown} placeholder={t('搜索本文')} aria-label={t('搜索本文')} aria-describedby="search-result-status" />
@@ -288,9 +322,9 @@ export function AppHeader({
         {tabs.length > 0 && <button className="icon-button" onClick={onGoBack} disabled={!canGoBack || navigationBusy} title={t('后退（⌘[ / Alt+←）')} aria-label={t('后退')}><ArrowLeft size={17} /></button>}
         {tabs.length > 0 && <button className="icon-button" onClick={onGoForward} disabled={!canGoForward || navigationBusy} title={t('前进（⌘] / Alt+→）')} aria-label={t('前进')}><ArrowRight size={17} /></button>}
         {tabs.length > 0 && <button className="icon-button" onClick={onRefresh} title={t('刷新文档（⌘R / Ctrl+R）')} aria-label={t('刷新文档')}><RefreshCw className={loading ? 'is-spinning' : ''} size={17} /></button>}
-        {tabs.length > 0 && <button className={'icon-button' + (searchOpen ? ' is-active' : '')} onClick={onToggleSearch} title={t('搜索本文（⌘F / Ctrl+F）')} aria-label={t('搜索本文')}><Search size={17} /></button>}
+        {tabs.length > 0 && canSearch && activeDocumentType && <button ref={searchToggleRef} className={'icon-button' + (searchOpen ? ' is-active' : '')} onClick={onToggleSearch} title={t('搜索本文（⌘F / Ctrl+F）')} aria-label={t('搜索本文')}><Search size={17} /></button>}
         {canExportPdf && <button className="icon-button toolbar-secondary" onClick={onExportPdf} disabled={exportingPdf} title={t(exportingPdf ? '正在导出 PDF…' : '导出 PDF')} aria-label={t(exportingPdf ? '正在导出 PDF…' : '导出 PDF')}>{exportingPdf ? <LoaderCircle className="is-spinning" size={17} /> : <FileDown size={17} />}</button>}
-        {tabs.length > 0 && <button className={'icon-button toolbar-secondary' + (tocOpen ? ' is-active' : '')} onClick={onToggleToc} title={t('文档目录')} aria-label={t('文档目录')}><ListTree size={17} /></button>}
+        {tabs.length > 0 && canToggleNavigation && <button className={'icon-button toolbar-secondary' + (tocOpen ? ' is-active' : '')} onClick={onToggleToc} title={navigationLabel} aria-label={navigationLabel}><ListTree size={17} /></button>}
         <button className="theme-button toolbar-secondary" onClick={onCycleTheme} title={t('主题：{theme}，点击切换', { theme: themeLabel })} aria-label={t('主题：{theme}，点击切换', { theme: themeLabel })}>
           <ThemeIcon size={16} />
           <ChevronDown size={12} />
@@ -300,8 +334,13 @@ export function AppHeader({
         <details ref={moreMenuRef} className="topbar-more">
           <summary className="icon-button topbar-more-trigger" aria-label={t('更多阅读工具')} title={t('更多阅读工具')}><MoreHorizontal size={18} /></summary>
           <div className="topbar-more-panel" role="group" aria-label={t('更多阅读工具')}>
+            {pagedControls && <>
+              <button className="icon-button" onClick={() => { closeMoreMenu(); pagedControls.onFitWidth() }} title={t('适合宽度')} aria-label={t('适合宽度')}><span>↔</span><span className="topbar-more-label">{t('适合宽度')}</span></button>
+              <button className="icon-button" onClick={() => { closeMoreMenu(); pagedControls.onFitPage() }} title={t('整页')} aria-label={t('整页')}><span>□</span><span className="topbar-more-label">{t('整页')}</span></button>
+              <button className="icon-button" onClick={() => { closeMoreMenu(); pagedControls.onRotate() }} title={t('旋转页面')} aria-label={t('旋转页面')}><RotateCw size={17} /><span className="topbar-more-label">{t('旋转页面')}</span></button>
+            </>}
             {canExportPdf && <button className="icon-button" onClick={() => { closeMoreMenu(); onExportPdf() }} disabled={exportingPdf} title={t(exportingPdf ? '正在导出 PDF…' : '导出 PDF')} aria-label={t(exportingPdf ? '正在导出 PDF…' : '导出 PDF')}><FileDown size={17} /><span className="topbar-more-label">{t(exportingPdf ? '正在导出 PDF…' : '导出 PDF')}</span></button>}
-            <button className={'icon-button' + (tocOpen ? ' is-active' : '')} onClick={() => { closeMoreMenu(); onToggleToc() }} title={t('文档目录')} aria-label={t('文档目录')} disabled={tabs.length === 0}><ListTree size={17} /><span className="topbar-more-label">{t('文档目录')}</span></button>
+            {canToggleNavigation && <button className={'icon-button' + (tocOpen ? ' is-active' : '')} onClick={() => { closeMoreMenu(); onToggleToc() }} title={navigationLabel} aria-label={navigationLabel}><ListTree size={17} /><span className="topbar-more-label">{navigationLabel}</span></button>}
             <button className="theme-button" onClick={() => { closeMoreMenu(); onCycleTheme() }} title={t('主题：{theme}，点击切换', { theme: themeLabel })} aria-label={t('主题：{theme}，点击切换', { theme: themeLabel })}>
               <ThemeIcon size={16} />
               <ChevronDown size={12} />
@@ -313,4 +352,36 @@ export function AppHeader({
       </div>
     </header>
   )
+}
+
+type PagedToolbarProps = NonNullable<AppHeaderProps['pagedControls']> & { compactForMac: boolean }
+
+function PagedToolbar({ documentType, page, pageCount, scale, minScale, maxScale, onPageChange, onZoomIn, onZoomOut, onFitWidth, onFitPage, onRotate, onResetZoom, compactForMac }: PagedToolbarProps) {
+  const t = useI18n()
+  const [draftPage, setDraftPage] = useState(String(page))
+  useEffect(() => setDraftPage(String(page)), [page])
+  const commitPage = () => {
+    const parsed = Number(draftPage)
+    if (Number.isFinite(parsed) && pageCount > 0) onPageChange(Math.max(1, Math.min(pageCount, Math.floor(parsed))))
+    else setDraftPage(String(page))
+  }
+  return <div className="paged-topbar-controls" role="group" aria-label={t(documentType === 'pdf' ? 'PDF 阅读控制' : 'OFD 阅读控制')}>
+    <button type="button" className="icon-button compact" onClick={() => onPageChange(Math.max(1, page - 1))} disabled={page <= 1} aria-label={t('上一页')} title={t('上一页')}><ChevronLeft size={15} /></button>
+    <label className="ofd-page-control"><span className="sr-only">{t('页码')}</span><input
+      type="number" min={1} max={pageCount || undefined} value={draftPage} aria-label={t('页码')}
+      onChange={event => setDraftPage(event.target.value)}
+      onBlur={commitPage}
+      onKeyDown={event => { if (event.key === 'Enter') { commitPage(); event.currentTarget.blur() } }}
+    /><span>/ {pageCount || '—'}</span></label>
+    <button type="button" className="icon-button compact" onClick={() => onPageChange(Math.min(pageCount, page + 1))} disabled={!pageCount || page >= pageCount} aria-label={t('下一页')} title={t('下一页')}><ChevronRight size={15} /></button>
+    <span className="ofd-toolbar-divider" aria-hidden="true" />
+    <button type="button" className="icon-button compact" onClick={onZoomOut} disabled={scale <= minScale} aria-label={t(documentType === 'pdf' ? '缩小 PDF' : '缩小 OFD')} title={t(documentType === 'pdf' ? '缩小 PDF' : '缩小 OFD')}><ZoomOut size={15} /></button>
+    <button type="button" className="paged-scale-label" onClick={onResetZoom} aria-label={t('重置页面倍率（⌘0 / Ctrl+0）')} title={t('重置页面倍率（⌘0 / Ctrl+0）')}>{Math.round(scale * 100)}%</button>
+    <button type="button" className="icon-button compact" onClick={onZoomIn} disabled={scale >= maxScale} aria-label={t(documentType === 'pdf' ? '放大 PDF' : '放大 OFD')} title={t(documentType === 'pdf' ? '放大 PDF' : '放大 OFD')}><ZoomIn size={15} /></button>
+    {!compactForMac && <>
+      <button type="button" className="icon-button compact paged-fit-button" onClick={onFitWidth} aria-label={t('适合宽度')} title={t('适合宽度')}><span>↔</span></button>
+      <button type="button" className="icon-button compact paged-fit-button" onClick={onFitPage} aria-label={t('整页')} title={t('整页')}><span>□</span></button>
+      <button type="button" className="icon-button compact paged-rotate-button" onClick={onRotate} aria-label={t('旋转页面')} title={t('旋转页面')}><RotateCw size={15} /></button>
+    </>}
+  </div>
 }

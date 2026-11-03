@@ -17,6 +17,9 @@ const mathRenderingState = vi.hoisted(() => ({
   defer: false,
   release: null as null | (() => Promise<void>),
 }))
+const pdfViewerState = vi.hoisted(() => ({
+  pendingCallbacks: {} as Record<string, (tabId: string, pending: boolean) => void>,
+}))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke, isTauri: tauri.isTauri }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }))
@@ -50,6 +53,36 @@ vi.mock('../components/reader/MermaidDiagram', async () => {
     ),
   }
 })
+vi.mock('../components/reader/PdfViewer', async () => {
+  const { createElement } = await import('react')
+  return { PdfViewer: ({ document, tabId, onSearchPendingChange }: {
+    document: { fileName: string }
+    tabId: string
+    onSearchPendingChange: (tabId: string, pending: boolean) => void
+  }) => {
+    pdfViewerState.pendingCallbacks[tabId] = onSearchPendingChange
+    return createElement('section', { 'data-testid': 'pdf-viewer' }, document.fileName)
+  } }
+})
+vi.mock('../components/reader/OfdViewer', async () => {
+  const { createElement } = await import('react')
+  return { OfdViewer: ({ document }: { document: { fileName: string } }) => createElement('section', { 'data-testid': 'ofd-viewer' }, document.fileName) }
+})
+vi.mock('../features/documents/pdf/reader', () => ({
+  createPdfAdapter: () => ({
+  documentType: 'pdf', extensions: ['pdf'], capabilities: ['read', 'search', 'thumbnails', 'page-navigation', 'page-zoom'],
+    async open(filePath: string) {
+      const info = await tauri.invoke('inspect_pdf_document', { filePath }) as {
+        canonicalPath: string; displayName: string; byteSize: number; modifiedUnixMicros: number
+      }
+      const payload = { documentType: 'pdf', filePath: info.canonicalPath, fileName: info.displayName,
+        byteSize: info.byteSize, modifiedUnixMicros: info.modifiedUnixMicros, pageCount: 2,
+        pdfDocument: {}, outline: [] }
+      return { descriptor: { documentType: 'pdf', canonicalPath: info.canonicalPath, displayName: info.displayName },
+        capabilities: ['read', 'search', 'thumbnails', 'page-navigation', 'page-zoom'], payload, close: vi.fn(async () => undefined) }
+    },
+  }),
+}))
 
 const sampleDocument = {
   filePath: '/tmp/阅读样本.md',
@@ -104,6 +137,7 @@ describe('MdStudio Reader UI', () => {
     vi.mocked(save).mockResolvedValue('/tmp/formula.pdf')
     mathRenderingState.defer = false
     mathRenderingState.release = null
+    pdfViewerState.pendingCallbacks = {}
     tauri.listen.mockResolvedValue(vi.fn())
     tauri.onDragDropEvent.mockResolvedValue(vi.fn())
     Object.defineProperty(window, 'scrollTo', { configurable: true, value: vi.fn() })
@@ -125,10 +159,69 @@ describe('MdStudio Reader UI', () => {
     await renderApp()
 
     expect(host.textContent).toContain('打开即读，简单纯粹。')
-    expect(host.textContent).toContain('支持 .md 和 .markdown')
+    expect(host.textContent).toContain('支持 .md、.markdown、.pdf 和 .ofd')
     expect(host.textContent).toContain('只读')
     expect(host.querySelector('.reader-article')).toBeNull()
     expect(host.querySelector('.welcome-panel .brand-logo')?.getAttribute('alt')).toBe('MdStudio')
+  })
+
+  it('文件选择器接受 PDF 并通过同一文档打开流程创建阅读标签', async () => {
+    const path = '/tmp/选择器样本.pdf'
+    tauri.isTauri.mockReturnValue(true)
+    vi.mocked(open).mockResolvedValue(path)
+    tauri.invoke.mockImplementation(async (command: string, args?: { filePath?: string }) => {
+      if (command === 'take_pending_open_files') return []
+      if (command === 'inspect_pdf_document') return {
+        canonicalPath: args?.filePath, displayName: '选择器样本.pdf', byteSize: 2048, modifiedUnixMicros: 9,
+      }
+      return null
+    })
+    await renderApp()
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('.welcome-panel .open-button')?.click()
+      await new Promise(resolve => setTimeout(resolve, 20))
+    })
+
+    expect(open).toHaveBeenCalledWith({
+      multiple: true,
+      directory: false,
+      filters: [{ name: 'Markdown / PDF / OFD 文档', extensions: ['md', 'markdown', 'pdf', 'ofd'] }],
+    })
+    expect(host.querySelector('[data-testid="pdf-viewer"]')?.textContent).toBe('选择器样本.pdf')
+    expect(host.querySelector('[role="tab"][title="/tmp/选择器样本.pdf"]')).not.toBeNull()
+  })
+
+  it('日语界面不直接显示未翻译的 OFD 打开错误', async () => {
+    const path = '/tmp/invalid.ofd'
+    localStorage.setItem(READER_STORAGE_KEYS.settings, JSON.stringify({
+      schemaVersion: 1, theme: 'light', fontSizePx: 17, readingWidth: 'wide',
+      restoreTabs: true, rememberPosition: true, doubleClickToClose: true, locale: 'ja',
+    }))
+    let onDrop: ((event: { payload: { type: string; paths: string[] } }) => void) | undefined
+    tauri.isTauri.mockReturnValue(true)
+    tauri.onDragDropEvent.mockImplementation(handler => {
+      onDrop = handler as (event: { payload: { type: string; paths: string[] } }) => void
+      return Promise.resolve(vi.fn())
+    })
+    tauri.invoke.mockImplementation(async (command: string, args?: { filePath?: string }) => {
+      if (command === 'take_pending_open_files') return []
+      if (command === 'inspect_document_path') return {
+        documentType: 'ofd', canonicalPath: args?.filePath, displayName: 'invalid.ofd', exists: true, byteSize: 8,
+      }
+      if (command === 'inspect_ofd_document') throw new Error('OFD XML 无法安全解析：未翻译的引擎错误')
+      return null
+    })
+    await renderApp()
+    await act(async () => {
+      onDrop?.({ payload: { type: 'drop', paths: [path] } })
+      await new Promise(resolve => setTimeout(resolve, 25))
+    })
+
+    const alertText = host.querySelector('[role="alert"]')?.textContent ?? ''
+    expect(alertText).toContain('OFD を読み込めません。')
+    expect(alertText).not.toContain('未翻訳のエンジンエラー')
+    expect(alertText).not.toContain('OFD XML 无法安全解析')
   })
 
   it('renders the loaded document with TOC, search and code-copy controls', async () => {
@@ -526,7 +619,7 @@ describe('MdStudio Reader UI', () => {
     })
     expect(host.querySelector('.reader-toast.is-warning[role="alert"]')?.textContent).toContain('当前更改仅在本次运行中生效')
     expect(host.querySelector('.reader-width-picker summary')?.textContent).toContain('紧凑')
-    expect(JSON.parse(localStorage.getItem(READER_STORAGE_KEYS.settings) || '{}').readingWidth).toBe('wide')
+    expect(JSON.parse(localStorage.getItem(READER_STORAGE_KEYS.persistenceV2) || '{}').settings.readingWidth).toBe('wide')
   })
 
   it('系统菜单的关于入口打开设置中的关于页', async () => {
@@ -656,8 +749,8 @@ describe('MdStudio Reader UI', () => {
     vi.mocked(open).mockResolvedValue(['/tmp/新增.md'])
     await act(async () => {
       expect(host.querySelector('.reader-topbar .open-button')).toBeNull()
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="打开 Markdown 文件（Ctrl/Cmd+O）"]')).not.toBeNull()
-      host.querySelector<HTMLButtonElement>('[aria-label="打开 Markdown 文件（Ctrl/Cmd+O）"]')?.click()
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="打开文档（Ctrl/Cmd+O）"]')).not.toBeNull()
+      host.querySelector<HTMLButtonElement>('[aria-label="打开文档（Ctrl/Cmd+O）"]')?.click()
       await new Promise(resolve => setTimeout(resolve, 25))
     })
     expect(open).toHaveBeenCalledOnce()
@@ -1470,8 +1563,8 @@ describe('MdStudio Reader UI', () => {
     expect(host.querySelector('.reader-article')?.textContent).toContain('one.md')
   })
 
-  it('批量拖入 Markdown 文件逐个建标签并忽略其他文件', async () => {
-    const paths = ['/tmp/drop-a.md', '/tmp/drop-b.markdown', '/tmp/not-image.png', '/tmp/drop-c.md']
+  it('批量拖入 Markdown 和 OFD 文件逐个建标签，忽略不支持的文件', async () => {
+    const paths = ['/tmp/drop-a.md', '/tmp/drop-b.markdown', '/tmp/not-image.png', '/tmp/drop-ofd.ofd', '/tmp/drop-c.md']
     let onDrop: ((event: { payload: { type: string; paths: string[] } }) => void) | undefined
     tauri.onDragDropEvent.mockImplementation(handler => {
       onDrop = handler as (event: { payload: { type: string; paths: string[] } }) => void
@@ -1482,6 +1575,18 @@ describe('MdStudio Reader UI', () => {
       if (command === 'take_pending_open_files') return []
       if (command === 'normalize_reader_path') return args?.filePath
       if (command === 'load_reader_document') return documentFor(args?.filePath || '')
+      if (command === 'inspect_document_path') return {
+        documentType: args?.filePath?.endsWith('.ofd') ? 'ofd' : 'markdown',
+        canonicalPath: args?.filePath,
+        displayName: args?.filePath?.split('/').at(-1),
+        exists: true,
+        byteSize: 1,
+      }
+      if (command === 'inspect_ofd_document') return {
+        canonicalPath: '/tmp/drop-ofd.ofd', displayName: 'drop-ofd.ofd', byteSize: 4,
+        modifiedUnixMicros: 1, pageCount: 1, hasSignatures: false, resourceWarnings: [],
+      }
+      if (command === 'read_ofd_document') return new Uint8Array([80, 75, 3, 4]).buffer
       return null
     })
     await renderApp()
@@ -1489,8 +1594,119 @@ describe('MdStudio Reader UI', () => {
       onDrop?.({ payload: { type: 'drop', paths } })
       await new Promise(resolve => setTimeout(resolve, 20))
     })
-    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(3)
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(4)
+    expect(Array.from(host.querySelectorAll('[role="tab"]')).map(tab => tab.textContent).join(' ')).toContain('drop-ofd.ofd')
     expect(host.querySelector('.reader-article')?.textContent).toContain('drop-c.md')
+    expect(tauri.invoke).toHaveBeenCalledWith('inspect_document_path', { filePath: '/tmp/drop-ofd.ofd' })
+    expect(tauri.invoke).toHaveBeenCalledWith('inspect_ofd_document', { filePath: '/tmp/drop-ofd.ofd' })
+    expect(tauri.invoke).not.toHaveBeenCalledWith('load_reader_document', { filePath: '/tmp/drop-ofd.ofd' })
+  })
+
+  it('混合拖入 Markdown、PDF、OFD 后分别进入对应的阅读器标签', async () => {
+    const paths = ['/tmp/mixed.md', '/tmp/mixed.pdf', '/tmp/mixed.ofd']
+    let onDrop: ((event: { payload: { type: string; paths: string[] } }) => void) | undefined
+    tauri.onDragDropEvent.mockImplementation(handler => {
+      onDrop = handler as (event: { payload: { type: string; paths: string[] } }) => void
+      return Promise.resolve(vi.fn())
+    })
+    tauri.isTauri.mockReturnValue(true)
+    tauri.invoke.mockImplementation(async (command: string, args?: { filePath?: string }) => {
+      if (command === 'take_pending_open_files') return []
+      if (command === 'normalize_reader_path') return args?.filePath
+      if (command === 'load_reader_document') return documentFor(args?.filePath || '')
+      if (command === 'inspect_pdf_document') return {
+        canonicalPath: args?.filePath, displayName: 'mixed.pdf', byteSize: 1024, modifiedUnixMicros: 5,
+      }
+      if (command === 'inspect_document_path') return {
+        documentType: 'ofd', canonicalPath: args?.filePath, displayName: 'mixed.ofd', exists: true, byteSize: 4,
+      }
+      if (command === 'inspect_ofd_document') return {
+        canonicalPath: args?.filePath, displayName: 'mixed.ofd', byteSize: 4,
+        modifiedUnixMicros: 6, pageCount: 1, hasSignatures: false, resourceWarnings: [],
+      }
+      if (command === 'read_ofd_document') return new Uint8Array([80, 75, 3, 4]).buffer
+      return null
+    })
+    await renderApp()
+    await act(async () => {
+      onDrop?.({ payload: { type: 'drop', paths } })
+      await new Promise(resolve => setTimeout(resolve, 35))
+    })
+
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(3)
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]')).map(tab => tab.title)).toEqual(paths)
+    expect(host.querySelector('[data-testid="ofd-viewer"]')?.textContent).toBe('mixed.ofd')
+    expect(localStorage.getItem(READER_STORAGE_KEYS.persistenceV2)).toContain('"documentType":"ofd"')
+
+    await act(async () => host.querySelector<HTMLButtonElement>('[role="tab"][title="/tmp/mixed.pdf"]')?.click())
+    expect(host.querySelector('[data-testid="pdf-viewer"]')?.textContent).toBe('mixed.pdf')
+    await act(async () => host.querySelector<HTMLButtonElement>('.topbar-actions > [aria-label="页面导航"]')?.click())
+    expect(host.querySelectorAll('.document-navigation-panel')).toHaveLength(1)
+    await act(async () => host.querySelector<HTMLButtonElement>('[role="tab"][title="/tmp/mixed.md"]')?.click())
+    expect(host.querySelector('.reader-article')?.textContent).toContain('mixed.md')
+  })
+
+  it('多个标签的搜索等待状态互不覆盖，迟到的旧搜索完成不清除当前状态', async () => {
+    const paths = ['/tmp/search-a.pdf', '/tmp/search-b.pdf']
+    let onDrop: ((event: { payload: { type: string; paths: string[] } }) => void) | undefined
+    tauri.isTauri.mockReturnValue(true)
+    tauri.onDragDropEvent.mockImplementation(handler => {
+      onDrop = handler as (event: { payload: { type: string; paths: string[] } }) => void
+      return Promise.resolve(vi.fn())
+    })
+    tauri.invoke.mockImplementation(async (command: string, args?: { filePath?: string }) => {
+      if (command === 'take_pending_open_files') return []
+      if (command === 'inspect_pdf_document') return {
+        canonicalPath: args?.filePath, displayName: args?.filePath?.split('/').at(-1), byteSize: 1024, modifiedUnixMicros: 5,
+      }
+      return null
+    })
+    await renderApp()
+    await act(async () => {
+      onDrop?.({ payload: { type: 'drop', paths } })
+      await new Promise(resolve => setTimeout(resolve, 30))
+    })
+
+    const tab = (path: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find(item => item.title === path)!
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="搜索本文"]')?.click())
+    await act(async () => pdfViewerState.pendingCallbacks[paths[1]]?.(paths[1], true))
+    expect(host.querySelector('.search-count')?.textContent).toBe('搜索中…')
+
+    await act(async () => tab(paths[0]).click())
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="搜索本文"]')?.click())
+    await act(async () => pdfViewerState.pendingCallbacks[paths[0]]?.(paths[0], true))
+    expect(host.querySelector('.search-count')?.textContent).toBe('搜索中…')
+
+    await act(async () => pdfViewerState.pendingCallbacks[paths[1]]?.(paths[1], false))
+    expect(host.querySelector('.search-count')?.textContent).toBe('搜索中…')
+    await act(async () => tab(paths[1]).click())
+    expect(host.querySelector('.search-count')?.textContent).toBe('0 / 0')
+  })
+
+  it('关闭加载中的 Markdown 标签后，迟到的文档会话仍释放图片资源', async () => {
+    const path = '/tmp/late-document.md'
+    let resolveDocument!: (document: typeof sampleImageDocument) => void
+    const deferredDocument = new Promise<typeof sampleImageDocument>(resolve => { resolveDocument = resolve })
+    tauri.isTauri.mockReturnValue(true)
+    tauri.invoke.mockImplementation(async (command: string, args?: { filePath?: string }) => {
+      if (command === 'take_pending_open_files') return [path]
+      if (command === 'normalize_reader_path') return args?.filePath
+      if (command === 'load_reader_document') return deferredDocument
+      return null
+    })
+
+    await renderApp()
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    const closeButton = host.querySelector<HTMLButtonElement>('[aria-label="关闭 late-document.md"]')
+    expect(closeButton).not.toBeNull()
+    await act(async () => closeButton?.click())
+
+    await act(async () => {
+      resolveDocument({ ...sampleImageDocument, filePath: path, fileName: 'late-document.md' })
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(tauri.invoke).toHaveBeenCalledWith('release_reader_image_document', { imageToken: 'reader-test-token' })
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(0)
   })
 
   it('非活动文件改动标记为过期，重新激活后刷新；删除只影响对应标签', async () => {

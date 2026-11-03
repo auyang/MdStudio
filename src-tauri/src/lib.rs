@@ -1,7 +1,9 @@
 mod commands;
 mod services;
 
-use commands::{enqueue_open_file, is_markdown_file, PendingOpenFiles, ReaderImageRegistry};
+use commands::{
+    enqueue_open_file, is_supported_document_file, PendingOpenFiles, ReaderImageRegistry,
+};
 use services::watcher::FileWatcherService;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -23,7 +25,8 @@ pub(crate) fn application_menu_for_locale<R: tauri::Runtime>(
 ) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
-    let (about_label, file_label, edit_label, _view_label, window_label, help_label) = match locale {
+    let (about_label, file_label, edit_label, _view_label, window_label, help_label) = match locale
+    {
         "en" => ("About MdStudio", "File", "Edit", "View", "Window", "Help"),
         "ja" => (
             "MdStudio について",
@@ -159,13 +162,13 @@ pub(crate) fn application_menu_for_locale<R: tauri::Runtime>(
     Ok(menu)
 }
 
-fn startup_markdown_paths() -> Vec<String> {
+fn startup_document_paths() -> Vec<String> {
     std::env::args_os()
         .skip(1)
         .filter_map(|argument| argument.into_string().ok())
         .filter_map(|argument| {
             let path = PathBuf::from(argument);
-            (is_markdown_file(&path) && path.is_file())
+            (is_supported_document_file(&path) && path.is_file())
                 .then(|| path.canonicalize().ok())
                 .flatten()
                 .map(|path| path.to_string_lossy().into_owned())
@@ -183,7 +186,7 @@ fn incoming_arguments(args: &[String], cwd: &str) -> Vec<String> {
             } else {
                 Path::new(cwd).join(path)
             };
-            (is_markdown_file(&path) && path.is_file())
+            (is_supported_document_file(&path) && path.is_file())
                 .then(|| path.canonicalize().ok())
                 .flatten()
                 .map(|path| path.to_string_lossy().into_owned())
@@ -195,7 +198,7 @@ fn incoming_arguments(args: &[String], cwd: &str) -> Vec<String> {
 pub fn run() {
     #[cfg(feature = "perf-benchmark")]
     commands::mark_performance_app_started();
-    let initial_paths = startup_markdown_paths();
+    let initial_paths = startup_document_paths();
     let builder = tauri::Builder::default();
     #[cfg(desktop)]
     let builder = builder.menu(application_menu).on_menu_event(|app, event| {
@@ -223,6 +226,9 @@ pub fn run() {
         )
         .manage(PendingOpenFiles::new(initial_paths))
         .manage(ReaderImageRegistry::default())
+        .manage(services::pdf_reader::PdfReadRegistry::default())
+        .manage(services::ofd_reader::OfdReadRegistry::default())
+        .manage(services::system_fonts::SystemFontService::default())
         .setup(|app| {
             app.manage(FileWatcherService::default());
             Ok(())
@@ -233,6 +239,16 @@ pub fn run() {
         commands::load_reader_image,
         commands::release_reader_image_document,
         commands::normalize_reader_path,
+        commands::inspect_document_path,
+        commands::inspect_pdf_document,
+        commands::read_pdf_range,
+        commands::cancel_pdf_range,
+        commands::inspect_ofd_document,
+        commands::read_ofd_document,
+        commands::cancel_ofd_read,
+        commands::resolve_ofd_system_fonts,
+        commands::read_ofd_system_font,
+        commands::release_ofd_system_fonts,
         commands::take_pending_open_files,
         commands::set_reader_watch,
         commands::open_external_url,
@@ -245,6 +261,16 @@ pub fn run() {
         commands::load_reader_image,
         commands::release_reader_image_document,
         commands::normalize_reader_path,
+        commands::inspect_document_path,
+        commands::inspect_pdf_document,
+        commands::read_pdf_range,
+        commands::cancel_pdf_range,
+        commands::inspect_ofd_document,
+        commands::read_ofd_document,
+        commands::cancel_ofd_read,
+        commands::resolve_ofd_system_fonts,
+        commands::read_ofd_system_font,
+        commands::release_ofd_system_fonts,
         commands::take_pending_open_files,
         commands::set_reader_watch,
         commands::open_external_url,
@@ -261,7 +287,7 @@ pub fn run() {
         if let tauri::RunEvent::Opened { urls } = _event {
             for url in urls {
                 if let Ok(path) = url.to_file_path() {
-                    if path.is_file() && is_markdown_file(&path) {
+                    if path.is_file() && is_supported_document_file(&path) {
                         if let Ok(path) = path.canonicalize() {
                             enqueue_open_file(_handle, path.to_string_lossy().into_owned());
                         }

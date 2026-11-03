@@ -106,8 +106,8 @@ fn validate_destination(file_path: String) -> Result<PathBuf, String> {
 fn export_macos(window: &WebviewWindow, destination: PathBuf) -> Result<(), String> {
     use objc2::{sel, MainThreadMarker};
     use objc2_app_kit::{
-        NSPrintHeaderAndFooter, NSPrintInfo, NSPrintJobSavingURL, NSPrintSaveJob,
-        NSPrintingPaginationMode, NSPaperOrientation, NSWindow,
+        NSPaperOrientation, NSPrintHeaderAndFooter, NSPrintInfo, NSPrintJobSavingURL,
+        NSPrintSaveJob, NSPrintingPaginationMode, NSWindow,
     };
     use objc2_foundation::{NSNumber, NSString, NSURL};
     use objc2_web_kit::WKWebView;
@@ -138,7 +138,10 @@ fn export_macos(window: &WebviewWindow, destination: PathBuf) -> Result<(), Stri
             // 页边距由 NSPrintInfo 唯一控制，避免与 CSS @page 重复叠加。
             // 关闭 WebKit 打印生成的默认页眉与页脚。
             let attributes = unsafe { print_info.dictionary() };
-            attributes.insert(unsafe { NSPrintHeaderAndFooter }, &NSNumber::new_bool(false));
+            attributes.insert(
+                unsafe { NSPrintHeaderAndFooter },
+                &NSNumber::new_bool(false),
+            );
 
             let path = NSString::from_str(&destination.to_string_lossy());
             let file_url = NSURL::fileURLWithPath(&path);
@@ -189,8 +192,7 @@ fn export_windows(window: &WebviewWindow, destination: PathBuf) -> Result<(), St
     use std::sync::mpsc;
     use webview2_com::{
         Microsoft::Web::WebView2::Win32::{
-            ICoreWebView2Environment6, ICoreWebView2_7,
-            COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT,
+            ICoreWebView2Environment6, ICoreWebView2_7, COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT,
         },
         PrintToPdfCompletedHandler,
     };

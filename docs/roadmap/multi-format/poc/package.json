@@ -1,0 +1,25 @@
+{
+  "name": "mdstudio-ofd-poc",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4179",
+    "build": "tsc --noEmit && vite build",
+    "test:samples": "python3 scripts/validate_samples.py",
+    "test:font-fallback": "node scripts/verify_font_fallback.mjs"
+  },
+  "dependencies": {
+    "@ofdrw/ofdrw-viewer-engine": "0.1.7",
+    "@ofdrw/ofdrw-viewer-ui": "0.1.7",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.0",
+    "@types/react-dom": "19.2.0",
+    "@vitejs/plugin-react": "6.0.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.5"
+  }
+}

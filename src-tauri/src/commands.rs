@@ -1,5 +1,5 @@
 use crate::services::{
-    reader,
+    documents, ofd_reader, pdf_reader, reader,
     watcher::{FileWatcherService, WatcherStatus},
 };
 use ammonia::Url;
@@ -161,6 +161,158 @@ pub fn normalize_reader_path(file_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub fn inspect_document_path(file_path: String) -> Result<documents::DocumentDescriptor, String> {
+    documents::inspect_document_path(&file_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn inspect_pdf_document(file_path: String) -> Result<pdf_reader::PdfDocumentInfo, String> {
+    pdf_reader::inspect_pdf_document(&file_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn inspect_ofd_document(
+    file_path: String,
+) -> Result<ofd_reader::OfdDocumentInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || ofd_reader::inspect_ofd_document(&file_path))
+        .await
+        .map_err(|error| format!("OFD 检查任务失败：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn resolve_ofd_system_fonts(
+    session_id: String,
+    requests: Vec<ofd_reader::OfdFontResource>,
+    fallback_preference: String,
+    service: State<'_, crate::services::system_fonts::SystemFontService>,
+) -> Result<crate::services::system_fonts::SystemFontResolution, String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let requests = requests
+            .into_iter()
+            .map(|font| crate::services::system_fonts::FontRequest {
+                id: font.id,
+                font_name: font.font_name,
+                family_name: font.family_name,
+                charset: font.charset,
+                serif: font.serif,
+                bold: font.bold,
+                italic: font.italic,
+                fixed_size: font.fixed_size,
+                required_characters: font.required_characters,
+            })
+            .collect::<Vec<_>>();
+        service.resolve(&session_id, &requests, &fallback_preference)
+    })
+    .await
+    .map_err(|error| format!("系统字体匹配任务失败：{error}"))?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn read_ofd_system_font(
+    session_id: String,
+    index: usize,
+    service: State<'_, crate::services::system_fonts::SystemFontService>,
+) -> Result<tauri::ipc::Response, String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.read_source(&session_id, index))
+        .await
+        .map_err(|error| format!("系统字体读取任务失败：{error}"))?
+        .map(tauri::ipc::Response::new)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn release_ofd_system_fonts(
+    session_id: String,
+    service: State<'_, crate::services::system_fonts::SystemFontService>,
+) -> Result<(), String> {
+    service
+        .release(&session_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn read_ofd_document(
+    file_path: String,
+    expected_byte_size: u64,
+    expected_modified_unix_micros: u64,
+    request_id: String,
+    registry: State<'_, ofd_reader::OfdReadRegistry>,
+) -> Result<tauri::ipc::Response, String> {
+    let registry = registry.inner().clone();
+    let cancelled = registry
+        .start(request_id.clone())
+        .map_err(|error| error.to_string())?;
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        ofd_reader::read_ofd_document(
+            &file_path,
+            expected_byte_size,
+            expected_modified_unix_micros,
+            &cancelled,
+        )
+    })
+    .await;
+    let _ = registry.finish(&request_id);
+    let read = task.map_err(|error| format!("OFD 二进制读取任务失败：{error}"))?;
+    read.map(tauri::ipc::Response::new)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn cancel_ofd_read(
+    request_id: String,
+    registry: State<'_, ofd_reader::OfdReadRegistry>,
+) -> Result<(), String> {
+    registry
+        .cancel(&request_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn read_pdf_range(
+    file_path: String,
+    expected_byte_size: u64,
+    expected_modified_unix_micros: u64,
+    begin: u64,
+    end: u64,
+    request_id: String,
+    registry: State<'_, pdf_reader::PdfReadRegistry>,
+) -> Result<tauri::ipc::Response, String> {
+    let registry = registry.inner().clone();
+    let cancelled = registry
+        .start(request_id.clone())
+        .map_err(|error| error.to_string())?;
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        pdf_reader::read_pdf_range(
+            &file_path,
+            expected_byte_size,
+            expected_modified_unix_micros,
+            begin,
+            end,
+            &cancelled,
+        )
+    })
+    .await;
+    let _ = registry.finish(&request_id);
+    let read = task.map_err(|error| format!("PDF 数据读取任务失败：{error}"))?;
+    read.map(tauri::ipc::Response::new)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn cancel_pdf_range(
+    request_id: String,
+    registry: State<'_, pdf_reader::PdfReadRegistry>,
+) -> Result<(), String> {
+    registry
+        .cancel(&request_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn take_pending_open_files(pending: State<'_, PendingOpenFiles>) -> Vec<String> {
     pending.take()
 }
@@ -218,17 +370,24 @@ pub async fn export_reader_pdf(
 }
 
 pub fn is_markdown_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
-        })
+    documents::document_type(path) == Some(documents::DocumentType::Markdown)
+}
+
+pub fn is_supported_document_file(path: &Path) -> bool {
+    matches!(
+        documents::document_type(path),
+        Some(
+            documents::DocumentType::Markdown
+                | documents::DocumentType::Pdf
+                | documents::DocumentType::Ofd
+        )
+    )
 }
 
 pub const OPEN_FILE_EVENT: &str = "mdstudio:open-file";
 
 pub fn enqueue_open_file(app: &AppHandle, path: String) {
-    if !is_markdown_file(Path::new(&path)) {
+    if !is_supported_document_file(Path::new(&path)) {
         return;
     }
     if let Some(pending) = app.try_state::<PendingOpenFiles>() {

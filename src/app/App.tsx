@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import {
-  AlertCircle, BookOpen, Check, FileText, FolderOpen, LoaderCircle, RefreshCw,
+  AlertCircle, BookOpen, Check,
   X, ZoomIn, ZoomOut,
 } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -16,11 +16,25 @@ import { AppHeader } from '../components/layout/AppHeader'
 import { ReadingWidthPicker } from '../components/layout/ReadingWidthPicker'
 import { MediaViewerDialog } from '../components/reader/MediaViewer'
 import type { MediaViewerContent } from '../components/reader/MediaViewer'
+import { PdfViewer } from '../components/reader/PdfViewer'
+import type { PdfViewerHandle } from '../components/reader/PdfViewer'
+import { ReaderTabLoadState, ReaderWelcomePanel } from '../components/reader/ReaderEntryState'
+import { DocumentNavigationPanel } from '../components/reader/DocumentNavigationPanel'
 import { renderReaderMath } from '../components/reader/mathRendering'
 import { SettingsDialog } from '../components/reader/SettingsDialog'
 import type { SettingsSection } from '../components/reader/SettingsDialog'
 import { SearchHighlightCanvas } from '../components/reader/SearchHighlightCanvas'
 import { DEFAULT_APP_LOCALE, I18nProvider, translate } from '../features/i18n'
+import { createMarkdownAdapter, DocumentAdapterRegistry } from '../features/documents/core/registry'
+import { createPdfAdapter } from '../features/documents/pdf/reader'
+import type { PdfReaderDocument } from '../features/documents/pdf/reader'
+import { createOfdAdapter } from '../features/documents/ofd/reader'
+import type { OfdReaderDocument } from '../features/documents/ofd/reader'
+import type { OFDViewerHandle } from '@ofdrw/ofdrw-viewer-ui/react'
+import type { OutlineNode } from '@ofdrw/ofdrw-viewer-ui'
+import { capabilitiesForType } from '../features/documents/core/types'
+import type { DocumentDescriptor } from '../features/documents/core/types'
+import type { DocumentWorkspace } from '../features/documents/core/workspace'
 import type { AppLocale } from '../features/reader/preferences'
 import { nextHtmlBlockEnd } from '../features/reader/htmlChunker'
 import {
@@ -38,7 +52,7 @@ import {
   emptyReaderTabs,
   updateReaderTab,
 } from '../features/reader/tabs'
-import type { ReaderReadingState, ReaderTab, ReaderTabsState } from '../features/reader/tabs'
+import type { ReaderReadingState, ReaderTab } from '../features/reader/tabs'
 import {
   clearReadingPositions,
   clearRecentFiles,
@@ -49,6 +63,8 @@ import {
   removeRecentFile,
   saveReaderSettings,
   saveReadingPositions,
+  savePdfReadingPositions,
+  saveOfdReadingPositions,
   saveRecentFiles,
   saveSessionState,
   READING_WIDTH_PX,
@@ -57,6 +73,8 @@ import type {
   ReaderSettingsV1,
   ReadingPositionV1,
   ReadingPositionsV1,
+  PdfReadingPosition,
+  OfdReadingPosition,
   RecentFileV1,
   StorageLike,
 } from '../features/reader/preferences'
@@ -80,7 +98,8 @@ type ReaderPerformanceTimings = {
   sanitizeMs: number
   totalMs: number
 }
-type ReaderDocument = {
+type MarkdownReaderDocument = {
+  documentType: 'markdown'
   filePath: string
   fileName: string
   html: string
@@ -93,8 +112,10 @@ type ReaderDocument = {
   modifiedUnixMs: number | null
   performance?: ReaderPerformanceTimings
 }
+type ReaderDocument = MarkdownReaderDocument | PdfReaderDocument | OfdReaderDocument
 type FileChangeEvent = { paths: string[]; operation: string }
 type ReaderTabState = ReaderTab<ReaderDocument>
+type ReaderWorkspace = DocumentWorkspace<ReaderDocument>
 type DeferredOpen = { paths: string[]; source: string; anchor?: string }
 type HeadingElements = HTMLElement[] | null
 
@@ -112,6 +133,18 @@ const EMPTY_READING_STATE: ReaderReadingState = {
 const TOC_ROW_HEIGHT = 30
 const TOC_VIRTUAL_THRESHOLD = 500
 const TOC_VISIBLE_ROWS = 40
+
+const documentAdapters = new DocumentAdapterRegistry<ReaderDocument>()
+documentAdapters.register(createMarkdownAdapter<ReaderDocument>({
+  load: async filePath => ({ ...await invoke<Omit<MarkdownReaderDocument, 'documentType'>>('load_reader_document', { filePath }), documentType: 'markdown' }),
+  release: document => document.documentType === 'markdown'
+    ? invoke('release_reader_image_document', { imageToken: document.imageToken })
+    : Promise.resolve(),
+}))
+documentAdapters.register(createPdfAdapter())
+documentAdapters.register(createOfdAdapter())
+
+const OfdViewer = lazy(async () => ({ default: (await import('../components/reader/OfdViewer')).OfdViewer }))
 
 function pathFileName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) || path
@@ -401,7 +434,7 @@ function resetReaderImagePlaceholder(image: HTMLImageElement, locale: AppLocale)
 export function App() {
   const isDesktop = useMemo(() => isTauri(), [])
   const [initialPersistence] = useState(loadInitialPersistence)
-  const [tabState, setTabState] = useState<ReaderTabsState<ReaderDocument>>(() => emptyReaderTabs<ReaderDocument>())
+  const [tabState, setTabState] = useState<ReaderWorkspace>(() => emptyReaderTabs<ReaderDocument>())
   const [navigation, setNavigation] = useState<NavigationHistory>(emptyNavigationHistory)
   const [navigationBusy, setNavigationBusy] = useState(false)
   const [mermaidHosts, setMermaidHosts] = useState<Array<{ element: HTMLElement; index: number }>>([])
@@ -419,7 +452,8 @@ export function App() {
   const [dragging, setDragging] = useState(false)
   const [exportingPdf, setExportingPdf] = useState(false)
   const [mediaContent, setMediaContent] = useState<MediaViewerContent | null>(null)
-  const [searchPending, setSearchPending] = useState(false)
+  const [searchPendingByTab, setSearchPendingByTab] = useState<Record<string, boolean>>({})
+  const [ofdOutlineState, setOfdOutlineState] = useState<{ tabId: string; items: readonly OutlineNode[] } | null>(null)
   const [fallbackSearch, setFallbackSearch] = useState<{ matches: DocumentSearchMatch[]; index: number } | null>(null)
   const [contentMountedFor, setContentMountedFor] = useState<object | null>(null)
   const [tocWindowStart, setTocWindowStart] = useState(0)
@@ -428,16 +462,21 @@ export function App() {
   const settingsRef = useRef(settings)
   const recentsRef = useRef(recents)
   const positionsRef = useRef(initialPersistence.positions)
+  const pdfPositionsRef = useRef(initialPersistence.pdfPositions)
+  const ofdPositionsRef = useRef(initialPersistence.ofdPositions)
   const storageRef = useRef<StorageLike | null>(getLocalStorage())
   const sessionReadyRef = useRef(false)
   const sessionSuppressedRef = useRef(false)
   const positionWritesSuspendedRef = useRef(false)
   const deferredOpenRef = useRef<DeferredOpen[]>([])
   const positionSaveTimer = useRef<number | undefined>(undefined)
+  const pdfPositionSaveTimer = useRef<number | undefined>(undefined)
+  const ofdPositionSaveTimer = useRef<number | undefined>(undefined)
   const sessionSaveTimer = useRef<number | undefined>(undefined)
   const imageRequests = useRef(new Map<string, Promise<string>>())
   const performanceDocumentMarks = useRef(new WeakMap<ReaderDocument, { id: number; requestStartedAt: number; ipcCompletedAt: number }>())
   const loadSequence = useRef(new Map<string, number>())
+  const loadControllers = useRef(new Map<string, AbortController>())
   const inFlightLoads = useRef(new Map<string, Promise<boolean>>())
   const openBatchSequence = useRef(0)
   const watcherQueue = useRef(Promise.resolve())
@@ -447,6 +486,9 @@ export function App() {
   const tocNavRef = useRef<HTMLElement>(null)
   const scrollPositionTimer = useRef<number | undefined>(undefined)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const searchToggleRef = useRef<HTMLButtonElement>(null)
+  const pdfViewerRef = useRef<PdfViewerHandle | null>(null)
+  const ofdViewerRef = useRef<OFDViewerHandle | null>(null)
   const mediaTriggerRef = useRef<HTMLElement | null>(null)
   const searchMatchesRef = useRef<DocumentSearchMatch[]>([])
   const searchRequestSequence = useRef(0)
@@ -459,7 +501,21 @@ export function App() {
   const tabs = tabState.tabs
   const activeTab = tabs.find(tab => tab.id === tabState.activeTabId) ?? null
   const activeTabId = activeTab?.id ?? null
-  const readerDocument = activeTab?.document ?? null
+  const searchPending = Boolean(activeTabId && searchPendingByTab[activeTabId])
+  const setTabSearchPending = useCallback((tabId: string, pending: boolean) => {
+    if (!tabStateRef.current.tabs.some(tab => tab.id === tabId)) return
+    setSearchPendingByTab(current => {
+      if (current[tabId] === pending) return current
+      const next = { ...current }
+      if (pending) next[tabId] = true
+      else delete next[tabId]
+      return next
+    })
+  }, [])
+  const activeDocument = activeTab?.document ?? null
+  const readerDocument = activeDocument?.documentType === 'markdown' ? activeDocument : null
+  const pdfReaderDocument = activeDocument?.documentType === 'pdf' ? activeDocument : null
+  const ofdReaderDocument = activeDocument?.documentType === 'ofd' ? activeDocument : null
   const contentMountKey = useMemo(() => ({}), [activeTabId, readerDocument])
   const contentReady = Boolean(readerDocument && contentMountedFor === contentMountKey)
   const tocHeadingIndexes = useMemo(() => readerDocument && readerDocument.headings.length > TOC_VIRTUAL_THRESHOLD
@@ -470,9 +526,16 @@ export function App() {
   const searchQuery = activeTab?.reading.searchQuery ?? ''
   const searchIndex = activeTab?.reading.searchMatchIndex ?? 0
   const tocOpen = activeTab?.reading.tocOpen ?? false
+  const activeCapabilities = activeTab?.session?.capabilities ?? (activeTab ? capabilitiesForType(activeTab.documentType) : [])
+  const canSearchActiveDocument = activeCapabilities.includes('search')
+  const canToggleNavigation = activeCapabilities.includes('toc') || activeCapabilities.includes('thumbnails')
   const loading = activeTab?.status === 'loading'
   const missingOnDisk = activeTab?.status === 'missing'
   const activeError = activeTab?.error || error
+  const translatedActiveError = activeError ? t(activeError) : ''
+  const displayedActiveError = activeError && activeTab?.documentType === 'ofd' && locale !== 'zh-CN' && translatedActiveError === activeError
+    ? t('OFD 文件无法读取，请检查文件或权限后重试。')
+    : translatedActiveError
 
   useEffect(() => {
     document.documentElement.lang = locale
@@ -501,10 +564,10 @@ export function App() {
   const isActiveImageToken = (token: string) => {
     const state = tabStateRef.current
     const tab = state.tabs.find(item => item.id === state.activeTabId)
-    return tab?.document?.imageToken === token
+    return tab?.document?.documentType === 'markdown' && tab.document.imageToken === token
   }
 
-  const commitTabState = useCallback((next: ReaderTabsState<ReaderDocument>) => {
+  const commitTabState = useCallback((next: ReaderWorkspace) => {
     tabStateRef.current = next
     setTabState(next)
   }, [])
@@ -559,11 +622,59 @@ export function App() {
     persistPositions(mergePosition(positionsRef.current, { ...position, path }), delayMs)
   }, [persistPositions])
 
+  const storePdfPosition = useCallback((path: string, position: Omit<PdfReadingPosition, 'path' | 'updatedAt'>, delayMs = 450) => {
+    if (!settingsRef.current.rememberPosition || positionWritesSuspendedRef.current) return
+    pdfPositionsRef.current = {
+      ...pdfPositionsRef.current,
+      [path]: { path, ...position, updatedAt: Date.now() },
+    }
+    if (pdfPositionSaveTimer.current !== undefined) window.clearTimeout(pdfPositionSaveTimer.current)
+    pdfPositionSaveTimer.current = window.setTimeout(() => {
+      pdfPositionSaveTimer.current = undefined
+      const storage = storageRef.current
+      if (!storage || !savePdfReadingPositions(storage, pdfPositionsRef.current)) {
+        setPersistenceError('阅读位置无法保存到本机，请检查浏览器存储空间。')
+      }
+    }, delayMs)
+  }, [])
+
+  const storeOfdPosition = useCallback((path: string, position: Omit<OfdReadingPosition, 'path' | 'updatedAt'>, delayMs = 450) => {
+    if (!settingsRef.current.rememberPosition || positionWritesSuspendedRef.current) return
+    ofdPositionsRef.current = {
+      ...ofdPositionsRef.current,
+      [path]: { path, ...position, updatedAt: Date.now() },
+    }
+    if (ofdPositionSaveTimer.current !== undefined) window.clearTimeout(ofdPositionSaveTimer.current)
+    ofdPositionSaveTimer.current = window.setTimeout(() => {
+      ofdPositionSaveTimer.current = undefined
+      const storage = storageRef.current
+      if (!storage || !saveOfdReadingPositions(storage, ofdPositionsRef.current)) {
+        setPersistenceError('阅读位置无法保存到本机，请检查浏览器存储空间。')
+      }
+    }, delayMs)
+  }, [])
+
   const saveActivePosition = useCallback(() => {
     const state = tabStateRef.current
     const id = state.activeTabId
     const active = state.tabs.find(tab => tab.id === id)
     if (!id || !active) return
+    if (active.documentType === 'pdf') {
+      storePdfPosition(active.canonicalPath, {
+        page: active.reading.pdfPage ?? 1,
+        scale: active.reading.pdfScale ?? 1,
+        rotation: active.reading.pdfRotation ?? 0,
+      })
+      return
+    }
+    if (active.documentType === 'ofd') {
+      storeOfdPosition(active.canonicalPath, {
+        page: active.reading.ofdPage ?? 1,
+        scale: active.reading.ofdScale ?? 1,
+        rotation: active.reading.ofdRotation ?? 0,
+      })
+      return
+    }
     const headingId = findHeadingAtPosition(headingElementsRef.current, articleRef.current, window.scrollY + 120)?.id
     const position = captureReadingPosition(active.canonicalPath, headingId)
     patchTab(id, tab => ({
@@ -576,7 +687,7 @@ export function App() {
       },
     }))
     storePosition(active.canonicalPath, position)
-  }, [patchTab, storePosition])
+  }, [patchTab, storeOfdPosition, storePdfPosition, storePosition])
 
   const updateSettings = useCallback((patch: Partial<ReaderSettingsV1>) => {
     const next = { ...settingsRef.current, ...patch }
@@ -657,9 +768,10 @@ export function App() {
       }
       frame?.querySelector('[data-reader-image-retry]')?.remove()
       const active = tabStateRef.current.tabs.find(tab => tab.id === tabStateRef.current.activeTabId)
-      const imageSize = active?.document?.imageAssets.find(asset => asset.index === index)?.size
+      const markdownDocument = active?.document?.documentType === 'markdown' ? active.document : null
+      const imageSize = markdownDocument?.imageAssets.find(asset => asset.index === index)?.size
       recordPerformance('reader-image-ready', {
-        documentId: active?.document ? performanceDocumentMarks.current.get(active.document)?.id : undefined,
+        documentId: markdownDocument ? performanceDocumentMarks.current.get(markdownDocument)?.id : undefined,
         durationMs: Number((performance.now() - imageStartedAt).toFixed(3)),
         byteSize: imageSize,
       })
@@ -740,6 +852,7 @@ export function App() {
         schemaVersion: 1,
         tabPaths: tabStateRef.current.tabs.map(tab => tab.canonicalPath),
         activePath: tabStateRef.current.tabs.find(tab => tab.id === tabStateRef.current.activeTabId)?.canonicalPath ?? null,
+        documentTypes: Object.fromEntries(tabStateRef.current.tabs.map(tab => [tab.canonicalPath, tab.documentType])),
         updatedAt: Date.now(),
       })
       if (!ok) setPersistenceError('恢复会话无法保存到本机，请检查浏览器存储空间。')
@@ -757,20 +870,47 @@ export function App() {
       if (!storage) return
       const active = tabStateRef.current.tabs.find(tab => tab.id === tabStateRef.current.activeTabId)
       if (active && settingsRef.current.rememberPosition && !positionWritesSuspendedRef.current) {
-        positionsRef.current = mergePosition(
-          positionsRef.current,
-          captureReadingPosition(
-            active.canonicalPath,
-            findHeadingAtPosition(headingElementsRef.current, articleRef.current, window.scrollY + 120)?.id,
-          ),
-        )
-        saveReadingPositions(storage, positionsRef.current)
+        if (active.documentType === 'pdf') {
+          pdfPositionsRef.current = {
+            ...pdfPositionsRef.current,
+            [active.canonicalPath]: {
+              path: active.canonicalPath,
+              page: active.reading.pdfPage ?? 1,
+              scale: active.reading.pdfScale ?? 1,
+              rotation: active.reading.pdfRotation ?? 0,
+              updatedAt: Date.now(),
+            },
+          }
+          savePdfReadingPositions(storage, pdfPositionsRef.current)
+        } else if (active.documentType === 'ofd') {
+          ofdPositionsRef.current = {
+            ...ofdPositionsRef.current,
+            [active.canonicalPath]: {
+              path: active.canonicalPath,
+              page: active.reading.ofdPage ?? 1,
+              scale: active.reading.ofdScale ?? 1,
+              rotation: active.reading.ofdRotation ?? 0,
+              updatedAt: Date.now(),
+            },
+          }
+          saveOfdReadingPositions(storage, ofdPositionsRef.current)
+        } else {
+          positionsRef.current = mergePosition(
+            positionsRef.current,
+            captureReadingPosition(
+              active.canonicalPath,
+              findHeadingAtPosition(headingElementsRef.current, articleRef.current, window.scrollY + 120)?.id,
+            ),
+          )
+          saveReadingPositions(storage, positionsRef.current)
+        }
       }
       if (settingsRef.current.restoreTabs && !sessionSuppressedRef.current) {
         saveSessionState(storage, {
           schemaVersion: 1,
           tabPaths: tabStateRef.current.tabs.map(tab => tab.canonicalPath),
           activePath: active?.canonicalPath ?? null,
+          documentTypes: Object.fromEntries(tabStateRef.current.tabs.map(tab => [tab.canonicalPath, tab.documentType])),
           updatedAt: Date.now(),
         })
       }
@@ -779,64 +919,82 @@ export function App() {
     return () => window.removeEventListener('beforeunload', beforeUnload)
   }, [sessionReady])
 
-  const releaseImageToken = useCallback((token?: string) => {
-    if (token && isDesktop) void invoke('release_reader_image_document', { imageToken: token }).catch(() => undefined)
-  }, [isDesktop])
-
   const loadReaderTab = useCallback((id: string, filePath: string): Promise<boolean> => {
     if (!tabStateRef.current.tabs.some(tab => tab.id === id)) return Promise.resolve(false)
     const existingRequest = inFlightLoads.current.get(id)
     if (existingRequest) return existingRequest
     const sequence = (loadSequence.current.get(id) ?? 0) + 1
     loadSequence.current.set(id, sequence)
+    loadControllers.current.get(id)?.abort()
+    const controller = new AbortController()
+    loadControllers.current.set(id, controller)
     patchTab(id, tab => ({ ...tab, status: 'loading', stale: false, error: undefined }))
 
     const request = (async () => {
       try {
         if (!isDesktop) throw new Error('文件只能在 MdStudio 桌面应用中读取。')
         const requestStartedAt = performance.now()
-        const loaded = await invoke<ReaderDocument>('load_reader_document', { filePath })
+        const session = await documentAdapters.open(filePath, { signal: controller.signal })
+        const loaded = session.payload
         const ipcCompletedAt = performance.now()
-        const documentId = ++nextPerformanceDocumentId
-        performanceDocumentMarks.current.set(loaded, { id: documentId, requestStartedAt, ipcCompletedAt })
-        recordPerformance('document-ipc-complete', {
-          documentId,
-          ipcRoundTripMs: Number((ipcCompletedAt - requestStartedAt).toFixed(3)),
-          byteSize: loaded.byteSize,
-          headingCount: loaded.headings?.length ?? 0,
-          mermaidCount: loaded.mermaidDiagrams?.length ?? 0,
-          imageCount: loaded.imageAssets?.length ?? 0,
-          ...(loaded.performance ?? {}),
-        })
+        if (loaded.documentType === 'markdown') {
+          const documentId = ++nextPerformanceDocumentId
+          performanceDocumentMarks.current.set(loaded, { id: documentId, requestStartedAt, ipcCompletedAt })
+          recordPerformance('document-ipc-complete', {
+            documentId,
+            ipcRoundTripMs: Number((ipcCompletedAt - requestStartedAt).toFixed(3)),
+            byteSize: loaded.byteSize,
+            headingCount: loaded.headings.length,
+            mermaidCount: loaded.mermaidDiagrams.length,
+            imageCount: loaded.imageAssets?.length ?? 0,
+            ...(loaded.performance ?? {}),
+          })
+        }
         const current = tabStateRef.current.tabs.find(tab => tab.id === id)
         if (!current || loadSequence.current.get(id) !== sequence) {
-          releaseImageToken(loaded.imageToken)
+          void session.close().catch(() => undefined)
           return false
         }
-        const previousToken = current.document?.imageToken
+        const previousSession = current.session
         patchTab(id, tab => ({
           ...tab,
+          documentType: session.descriptor.documentType,
           displayName: loaded.fileName,
           status: 'ready',
           stale: false,
           error: undefined,
           document: loaded,
+          session,
           reading: (() => {
+            if (loaded.documentType === 'pdf') {
+              const saved = settingsRef.current.rememberPosition ? pdfPositionsRef.current[tab.canonicalPath] : undefined
+              return {
+                ...tab.reading,
+                pdfPage: saved?.page ?? tab.reading.pdfPage ?? 1,
+                pdfScale: saved?.scale ?? tab.reading.pdfScale ?? 1,
+                pdfRotation: saved?.rotation ?? tab.reading.pdfRotation ?? 0,
+              }
+            }
+            if (loaded.documentType === 'ofd') {
+              const saved = settingsRef.current.rememberPosition ? ofdPositionsRef.current[tab.canonicalPath] : undefined
+              return {
+                ...tab.reading,
+                ofdPage: saved?.page ?? tab.reading.ofdPage ?? 1,
+                ofdScale: saved?.scale ?? tab.reading.ofdScale ?? 1,
+                ofdRotation: saved?.rotation ?? tab.reading.ofdRotation ?? 0,
+                ofdPageCount: loaded.pageCount,
+              }
+            }
             const saved = settingsRef.current.rememberPosition && !tab.reading.headingId
               ? positionsRef.current.items[tab.canonicalPath]
               : undefined
-            return saved ? {
-              ...tab.reading,
-              headingId: saved.headingId,
-              scrollTop: saved.scrollTop,
-              scrollRatio: saved.scrollRatio,
-            } : tab.reading
+            return saved ? { ...tab.reading, headingId: saved.headingId, scrollTop: saved.scrollTop, scrollRatio: saved.scrollRatio } : tab.reading
           })(),
         }))
-        if (previousToken && previousToken !== loaded.imageToken) releaseImageToken(previousToken)
+        if (previousSession && previousSession !== session) void previousSession.close().catch(() => undefined)
         return true
       } catch (reason) {
-        if (loadSequence.current.get(id) !== sequence) return false
+        if (controller.signal.aborted || loadSequence.current.get(id) !== sequence) return false
         const message = reason instanceof Error ? reason.message : String(reason)
         const current = tabStateRef.current.tabs.find(tab => tab.id === id)
         if (!current) return false
@@ -851,11 +1009,12 @@ export function App() {
       }
     })()
     const tracked = request.finally(() => {
+      if (loadControllers.current.get(id) === controller) loadControllers.current.delete(id)
       if (inFlightLoads.current.get(id) === tracked) inFlightLoads.current.delete(id)
     })
     inFlightLoads.current.set(id, tracked)
     return tracked
-  }, [isDesktop, patchTab, releaseImageToken])
+  }, [isDesktop, patchTab])
 
   const openDocuments = useCallback(async (
     filePaths: string[],
@@ -867,7 +1026,10 @@ export function App() {
       deferredOpenRef.current.push({ paths: [...filePaths], source, ...(anchor ? { anchor } : {}) })
       return false
     }
-    const accepted = filePaths.filter(path => /\.(md|markdown)$/i.test(path))
+    const accepted = filePaths.filter(path => {
+      const type = documentAdapters.typeForPath(path)
+      return type === 'markdown' || type === 'pdf' || type === 'ofd'
+    })
     if (!accepted.length) return false
     if (!isDesktop) {
       setError('文件选择仅在 MdStudio 桌面应用中可用。')
@@ -878,9 +1040,18 @@ export function App() {
     setError('')
     const normalized = await Promise.all(accepted.map(async filePath => {
       try {
-        return { original: filePath, path: await invoke<string>('normalize_reader_path', { filePath }), error: undefined as string | undefined }
+        const documentType = documentAdapters.typeForPath(filePath) ?? 'markdown'
+        if (documentType === 'pdf') {
+          const info = await invoke<{ canonicalPath: string }>('inspect_pdf_document', { filePath })
+          return { original: filePath, path: info.canonicalPath, documentType, error: undefined as string | undefined }
+        }
+        if (documentType === 'ofd') {
+          const info = await invoke<DocumentDescriptor>('inspect_document_path', { filePath })
+          return { original: filePath, path: info.canonicalPath, documentType, error: undefined as string | undefined }
+        }
+        return { original: filePath, path: await invoke<string>('normalize_reader_path', { filePath }), documentType, error: undefined as string | undefined }
       } catch (reason) {
-        return { original: filePath, path: filePath, error: reason instanceof Error ? reason.message : String(reason) }
+        return { original: filePath, path: filePath, documentType: documentAdapters.typeForPath(filePath) ?? 'markdown', error: reason instanceof Error ? reason.message : String(reason) }
       }
     }))
     const activeBeforeBatch = tabStateRef.current.activeTabId
@@ -895,12 +1066,14 @@ export function App() {
       const created: ReaderTabState = {
         id,
         canonicalPath: item.path,
+        documentType: item.documentType,
         displayName: pathFileName(item.path),
         status: item.error ? 'error' : 'loading',
         stale: false,
         ...(item.error ? { error: item.error } : {}),
         document: null,
-        reading: { ...EMPTY_READING_STATE, ...(anchor ? { headingId: anchor } : {}) },
+        session: null,
+        reading: { ...EMPTY_READING_STATE, ...(anchor && item.documentType === 'markdown' ? { headingId: anchor } : {}) },
       }
       const result = addOrActivateTab(next, created)
       next = result.state
@@ -928,7 +1101,8 @@ export function App() {
     if (activeChanged) setMediaContent(null)
     if (anchor && anchorTargetId === next.activeTabId && next.activeTabId === previousActiveId && next.tabs.find(tab => tab.id === next.activeTabId)?.document) {
       requestAnimationFrame(() => {
-        const targetId = resolveHeadingId(next.tabs.find(tab => tab.id === anchorTargetId)?.document?.headings ?? [], anchor)
+        const targetDocument = next.tabs.find(tab => tab.id === anchorTargetId)?.document
+        const targetId = targetDocument?.documentType === 'markdown' ? resolveHeadingId(targetDocument.headings, anchor) : undefined
         const target = targetId ? articleRef.current?.querySelector('#' + CSS.escape(targetId)) : null
         target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       })
@@ -973,7 +1147,7 @@ export function App() {
       commitTabState(activateReaderTab(tabStateRef.current, activeId))
     }
     return Boolean(activeId)
-  }, [commitTabState, isDesktop, loadReaderTab, saveActivePosition, updateRecentFiles])
+  }, [commitTabState, isDesktop, loadReaderTab, locale, saveActivePosition, updateRecentFiles])
 
   const activateTab = useCallback((id: string) => {
     const current = tabStateRef.current.tabs.find(tab => tab.id === tabStateRef.current.activeTabId)
@@ -1095,7 +1269,7 @@ export function App() {
   const navigateToHeading = useCallback(async (headingId: string, closeToc = false) => {
     const departure = captureNavigationLocation()
     const active = tabStateRef.current.tabs.find(tab => tab.id === tabStateRef.current.activeTabId)
-    if (!departure || !active?.document) return
+    if (!departure || active?.document?.documentType !== 'markdown') return
     const targetHeadingId = resolveHeadingId(active.document.headings, headingId) ?? headingId
     const target: ReadingLocation = {
       filePath: active.canonicalPath,
@@ -1117,7 +1291,9 @@ export function App() {
     if (!opened || !departure) return
     const active = tabStateRef.current.tabs.find(tab => tab.id === tabStateRef.current.activeTabId)
     if (!active?.document) return
-    const headingId = anchor ? resolveHeadingId(active.document.headings, anchor) ?? anchor : undefined
+    const headingId = anchor && active.document.documentType === 'markdown'
+      ? resolveHeadingId(active.document.headings, anchor) ?? anchor
+      : undefined
     const target: ReadingLocation = {
       filePath: active.canonicalPath,
       ...(headingId ? { headingId, headingOffset: 76 } : {}),
@@ -1148,20 +1324,36 @@ export function App() {
     const before = tabStateRef.current
     const closing = before.tabs.find(tab => tab.id === id)
     if (!closing) return
+    const closeViewer = before.activeTabId === id && closing.documentType === 'ofd'
+      ? ofdViewerRef.current?.close().catch(() => undefined)
+      : undefined
     openBatchSequence.current += 1
     if (before.activeTabId === id) saveActivePosition()
     loadSequence.current.set(id, (loadSequence.current.get(id) ?? 0) + 1)
+    loadControllers.current.get(id)?.abort()
+    loadControllers.current.delete(id)
     inFlightLoads.current.delete(id)
+    setSearchPendingByTab(current => {
+      if (!(id in current)) return current
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
     const result = closeReaderTab(tabStateRef.current, id)
     if (before.activeTabId === id) setMermaidHosts([])
+    setOfdOutlineState(current => current?.tabId === id ? null : current)
     commitTabState(result.state)
-    releaseImageToken(closing.document?.imageToken)
+    if (closing.session) {
+      void Promise.resolve(closeViewer)
+        .then(() => closing.session?.close())
+        .catch(() => undefined)
+    }
     if (before.activeTabId === id) setMediaContent(null)
     if (tabStateRef.current.tabs.length === 0) {
       setError('')
       setMermaidHosts([])
     }
-  }, [commitTabState, releaseImageToken, saveActivePosition])
+  }, [commitTabState, saveActivePosition])
 
   const chooseFile = useCallback(async () => {
     if (!isDesktop) {
@@ -1172,7 +1364,7 @@ export function App() {
       const selected = await open({
         multiple: true,
         directory: false,
-        filters: [{ name: 'Markdown 文档', extensions: ['md', 'markdown'] }],
+        filters: [{ name: 'Markdown / PDF / OFD 文档', extensions: ['md', 'markdown', 'pdf', 'ofd'] }],
       })
       if (Array.isArray(selected)) await openDocuments(selected, 'picker')
       else if (typeof selected === 'string') await openDocuments([selected], 'picker')
@@ -1229,7 +1421,7 @@ export function App() {
           if (event.payload.type === 'leave') setDragging(false)
           if (event.payload.type === 'drop') {
             setDragging(false)
-            const paths = event.payload.paths.filter(value => /\.(md|markdown)$/i.test(value))
+            const paths = event.payload.paths.filter(value => documentAdapters.knownTypeForPath(value) !== null)
             if (paths.length) void openDocuments(paths, 'drop')
           }
         })
@@ -1638,8 +1830,16 @@ export function App() {
     const article = articleRef.current
     const query = searchQuery.trim()
     const active = activeTabId ? tabStateRef.current.tabs.find(tab => tab.id === activeTabId) : null
+    if (active?.document?.documentType === 'pdf' || active?.document?.documentType === 'ofd') {
+      setFallbackSearch(null)
+      if (activeTabId) setTabSearchPending(activeTabId, false)
+      return () => {
+        if (searchRequestSequence.current === sequence) searchRequestSequence.current += 1
+        clearCssSearchHighlights()
+      }
+    }
     if (readerDocument && !contentReady && searchOpen && query) {
-      setSearchPending(true)
+      if (activeTabId) setTabSearchPending(activeTabId, true)
       return () => {
         if (searchRequestSequence.current === sequence) searchRequestSequence.current += 1
         clearCssSearchHighlights()
@@ -1647,7 +1847,7 @@ export function App() {
     }
 
     if (!article || !readerDocument || !searchOpen || !query) {
-      setSearchPending(false)
+      if (activeTabId) setTabSearchPending(activeTabId, false)
       if (active && active.reading.searchMatchCount !== 0) patchActiveReading({ searchMatchCount: 0 })
       return () => {
         if (searchRequestSequence.current === sequence) searchRequestSequence.current += 1
@@ -1655,7 +1855,7 @@ export function App() {
       }
     }
 
-    setSearchPending(true)
+    if (activeTabId) setTabSearchPending(activeTabId, true)
     const timer = window.setTimeout(() => {
       if (searchRequestSequence.current !== sequence || tabStateRef.current.activeTabId !== activeTabId) return
       const currentArticle = articleRef.current
@@ -1667,7 +1867,7 @@ export function App() {
       const currentTab = tabStateRef.current.tabs.find(tab => tab.id === activeTabId)
       if (!currentTab || tabStateRef.current.activeTabId !== activeTabId) return
       const index = matches.length ? Math.min(currentTab.reading.searchMatchIndex, matches.length - 1) : 0
-      setSearchPending(false)
+      if (activeTabId) setTabSearchPending(activeTabId, false)
       patchActiveReading({ searchMatchCount: matches.length, searchMatchIndex: index })
       recordPerformance('search-complete', {
         documentId: readerDocument ? performanceDocumentMarks.current.get(readerDocument)?.id : undefined,
@@ -1695,7 +1895,7 @@ export function App() {
       clearCssSearchHighlights()
       searchMatchesRef.current = []
     }
-  }, [activeTabId, contentReady, readerDocument, patchActiveReading, searchOpen, searchQuery])
+  }, [activeTabId, contentReady, readerDocument, patchActiveReading, searchOpen, searchQuery, setTabSearchPending])
 
   useLayoutEffect(() => {
     const matches = searchMatchesRef.current
@@ -1737,6 +1937,13 @@ export function App() {
   useEffect(() => {
     if (searchOpen) requestAnimationFrame(() => searchInputRef.current?.focus())
   }, [searchOpen])
+
+  const closeSearch = useCallback(() => {
+    if (activeTabId) setTabSearchPending(activeTabId, false)
+    setFallbackSearch(null)
+    patchActiveReading({ searchOpen: false })
+    requestAnimationFrame(() => searchToggleRef.current?.focus())
+  }, [activeTabId, patchActiveReading, setTabSearchPending])
 
   const refresh = useCallback(() => {
     const state = tabStateRef.current
@@ -1801,17 +2008,21 @@ export function App() {
         }
       } else if (command && event.key === '0') {
         event.preventDefault()
-        setZoom(100)
+        const active = tabStateRef.current.tabs.find(tab => tab.id === tabStateRef.current.activeTabId)
+        if (active?.documentType === 'pdf') pdfViewerRef.current?.resetZoom()
+        else if (active?.documentType === 'ofd') ofdViewerRef.current?.setScale(1)
+        else setZoom(100)
       } else if (command && key === 'r' && !event.shiftKey) {
         event.preventDefault()
         refresh()
       } else if (event.key === 'Escape') {
-        patchActiveReading({ searchOpen: false, tocOpen: false })
+        closeSearch()
+        patchActiveReading({ tocOpen: false })
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activateTab, chooseFile, closeTab, mediaContent, patchActiveReading, refresh, settingsOpen, stepNavigation])
+  }, [activateTab, chooseFile, closeSearch, closeTab, mediaContent, patchActiveReading, refresh, settingsOpen, stepNavigation])
 
   useEffect(() => {
     if (!notice) return
@@ -1820,6 +2031,13 @@ export function App() {
   }, [notice])
 
   const changeSearch = (delta: number) => {
+    const active = tabStateRef.current.tabs.find(tab => tab.id === tabStateRef.current.activeTabId)
+    if (active?.documentType === 'ofd') {
+      const viewer = ofdViewerRef.current?.getViewer()
+      if (delta < 0) void viewer?.findPrevious()
+      else void viewer?.findNext()
+      return
+    }
     if (searchCount) patchActiveReading({ searchMatchIndex: (searchIndex + delta + searchCount) % searchCount })
   }
 
@@ -1829,6 +2047,45 @@ export function App() {
     event.preventDefault()
     if (!searchPending) changeSearch(event.shiftKey ? -1 : 1)
   }
+
+  const onPdfReadingChange = useCallback((id: string, page: number, scale: number, rotation: number) => {
+    const tab = tabStateRef.current.tabs.find(item => item.id === id)
+    if (!tab || tab.documentType !== 'pdf') return
+    if (tab.reading.pdfPage === page && tab.reading.pdfScale === scale && tab.reading.pdfRotation === rotation) return
+    patchTab(id, current => ({ ...current, reading: { ...current.reading, pdfPage: page, pdfScale: scale, pdfRotation: rotation } }))
+    storePdfPosition(tab.canonicalPath, { page, scale, rotation })
+  }, [patchTab, storePdfPosition])
+
+  const onPdfSearchCountChange = useCallback((id: string, count: number) => {
+    const tab = tabStateRef.current.tabs.find(item => item.id === id)
+    if (tab?.documentType !== 'pdf' || tab.reading.searchMatchCount === count) return
+    patchTab(id, current => ({ ...current, reading: { ...current.reading, searchMatchCount: count, searchMatchIndex: Math.min(current.reading.searchMatchIndex, Math.max(0, count - 1)) } }))
+  }, [patchTab])
+
+  const onOfdReadingChange = useCallback((id: string, page: number, scale: number, rotation: number) => {
+    const tab = tabStateRef.current.tabs.find(item => item.id === id)
+    if (!tab || tab.documentType !== 'ofd') return
+    if (tab.reading.ofdPage === page && tab.reading.ofdScale === scale && tab.reading.ofdRotation === rotation) return
+    patchTab(id, current => ({ ...current, reading: { ...current.reading, ofdPage: page, ofdScale: scale, ofdRotation: rotation } }))
+    storeOfdPosition(tab.canonicalPath, { page, scale, rotation })
+  }, [patchTab, storeOfdPosition])
+
+  const onOfdPageCountChange = useCallback((id: string, pageCount: number) => {
+    patchTab(id, current => current.documentType === 'ofd'
+      ? { ...current, reading: { ...current.reading, ofdPageCount: pageCount } }
+      : current)
+  }, [patchTab])
+
+  const onOfdOutlineChange = useCallback((id: string, items: readonly OutlineNode[]) => {
+    if (!tabStateRef.current.tabs.some(tab => tab.id === id && tab.documentType === 'ofd')) return
+    setOfdOutlineState({ tabId: id, items })
+  }, [])
+
+  const onOfdSearchChange = useCallback((id: string, count: number, index: number) => {
+    patchTab(id, current => current.documentType === 'ofd'
+      ? { ...current, reading: { ...current.reading, searchMatchCount: count, searchMatchIndex: Math.max(0, Math.min(index, Math.max(0, count - 1))) } }
+      : current)
+  }, [patchTab])
 
   const removeRecent = (path: string) => {
     const next = removeRecentFile(recentsRef.current, path)
@@ -2098,8 +2355,12 @@ export function App() {
         logo={headerLogo}
         tabs={tabs}
         activeTabId={activeTabId}
+        activeDocumentType={activeTab?.documentType ?? null}
+        canToggleNavigation={canToggleNavigation}
+        canSearch={canSearchActiveDocument}
+        navigationLabel={t(readerDocument ? '文档目录' : '页面导航')}
         loading={loading}
-        searchOpen={searchOpen && Boolean(readerDocument)}
+        searchOpen={searchOpen && Boolean(activeDocument)}
         searchQuery={searchQuery}
         searchIndex={searchIndex}
         searchCount={searchCount}
@@ -2108,37 +2369,66 @@ export function App() {
         theme={settings.theme}
         doubleClickToClose={settings.doubleClickToClose}
         searchInputRef={searchInputRef}
+        searchToggleRef={searchToggleRef}
         canGoBack={navigation.currentIndex > 0}
         canGoForward={navigation.currentIndex >= 0 && navigation.currentIndex < navigation.entries.length - 1}
         navigationBusy={navigationBusy}
         canExportPdf={Boolean(isDesktop && readerDocument && contentReady && !loading)}
         exportingPdf={exportingPdf}
+        pagedControls={activeTab && pdfReaderDocument ? {
+          documentType: 'pdf',
+          page: activeTab.reading.pdfPage ?? 1,
+          pageCount: pdfReaderDocument.pageCount,
+          scale: activeTab.reading.pdfScale ?? 1,
+          minScale: 0.5,
+          maxScale: 3,
+          onPageChange: page => pdfViewerRef.current?.goToPage(page),
+          onZoomIn: () => pdfViewerRef.current?.zoomIn(),
+          onZoomOut: () => pdfViewerRef.current?.zoomOut(),
+          onFitWidth: () => pdfViewerRef.current?.fitWidth(),
+          onFitPage: () => pdfViewerRef.current?.fitPage(),
+          onRotate: () => pdfViewerRef.current?.rotate(),
+          onResetZoom: () => pdfViewerRef.current?.resetZoom(),
+        } : activeTab && ofdReaderDocument ? {
+          documentType: 'ofd',
+          page: activeTab.reading.ofdPage ?? 1,
+          pageCount: activeTab.reading.ofdPageCount ?? ofdReaderDocument.pageCount,
+          scale: activeTab.reading.ofdScale ?? 1,
+          minScale: 0.25,
+          maxScale: 3,
+          onPageChange: page => ofdViewerRef.current?.goToPage(page),
+          onZoomIn: () => ofdViewerRef.current?.setScale(Math.min(3, (activeTab.reading.ofdScale ?? 1) + 0.1)),
+          onZoomOut: () => ofdViewerRef.current?.setScale(Math.max(0.25, (activeTab.reading.ofdScale ?? 1) - 0.1)),
+          onFitWidth: () => ofdViewerRef.current?.setZoomMode('page-width'),
+          onFitPage: () => ofdViewerRef.current?.setZoomMode('page-fit'),
+          onRotate: () => ofdViewerRef.current?.setRotation((((activeTab.reading.ofdRotation ?? 0) + 90) % 360) as 0 | 90 | 180 | 270),
+          onResetZoom: () => ofdViewerRef.current?.setScale(1),
+        } : undefined}
         onGoBack={() => { void stepNavigation(-1) }}
         onGoForward={() => { void stepNavigation(1) }}
         onExportPdf={() => { void exportPdf() }}
         onRefresh={refresh}
-        onToggleSearch={() => patchActiveReading({ searchOpen: !searchOpen, tocOpen: false })}
+        onToggleSearch={() => {
+          if (searchOpen) closeSearch()
+          else patchActiveReading({ searchOpen: true, tocOpen: false })
+        }}
         onToggleToc={() => patchActiveReading({ tocOpen: !tocOpen, searchOpen: false })}
         onCycleTheme={cycleTheme}
         onOpenSettings={() => { setSettingsSection('appearance'); setSettingsSectionRequest(request => request + 1); setSettingsOpen(true) }}
         onOpenFile={() => void chooseFile()}
         onSearchQueryChange={query => {
-          setSearchPending(Boolean(query.trim()))
+          if (activeTabId) setTabSearchPending(activeTabId, Boolean(query.trim()))
           patchActiveReading({ searchQuery: query, searchMatchIndex: 0, searchMatchCount: 0 })
         }}
         onSearchPrevious={() => changeSearch(-1)}
         onSearchNext={() => changeSearch(1)}
         onSearchClear={() => {
-          setSearchPending(false)
+          if (activeTabId) setTabSearchPending(activeTabId, false)
           patchActiveReading({ searchQuery: '', searchMatchIndex: 0, searchMatchCount: 0 })
           searchInputRef.current?.focus()
         }}
         onSearchKeyDown={handleSearchKeyDown}
-        onCloseSearch={() => {
-          setSearchPending(false)
-          setFallbackSearch(null)
-          patchActiveReading({ searchOpen: false })
-        }}
+        onCloseSearch={closeSearch}
         onActivateTab={activateTab}
         onCloseTab={closeTab}
       />
@@ -2165,8 +2455,29 @@ export function App() {
         </nav> : <p className="empty-toc">{t('本文没有标题。')}</p>}
       </aside>}
 
-      <main className={'reader-main' + (readerDocument ? ' has-document' : ' is-home')}>
-        {activeError && <div className={'reader-alert' + (missingOnDisk ? ' is-warning' : '')} role={missingOnDisk ? 'status' : 'alert'}><span>{t(activeError)}</span>{activeTab && <button onClick={refresh}>{t('重试')}</button>}{!activeTab && <button onClick={() => setError('')} aria-label={t('关闭提示')}><X size={15} /></button>}</div>}
+      {tocOpen && activeTab && pdfReaderDocument && <DocumentNavigationPanel
+        documentType="pdf"
+        locale={locale}
+        page={activeTab.reading.pdfPage ?? 1}
+        pageCount={pdfReaderDocument.pageCount}
+        pdfDocument={pdfReaderDocument.pdfDocument}
+        pdfOutline={pdfReaderDocument.outline}
+        onPageChange={page => pdfViewerRef.current?.goToPage(page)}
+        onClose={() => patchActiveReading({ tocOpen: false })}
+      />}
+      {tocOpen && activeTab && ofdReaderDocument && <DocumentNavigationPanel
+        documentType="ofd"
+        locale={locale}
+        page={activeTab.reading.ofdPage ?? 1}
+        pageCount={activeTab.reading.ofdPageCount ?? ofdReaderDocument.pageCount}
+        ofdOutline={ofdOutlineState?.tabId === activeTab.id ? ofdOutlineState.items : undefined}
+        ofdViewer={ofdViewerRef.current}
+        onPageChange={page => ofdViewerRef.current?.goToPage(page)}
+        onClose={() => patchActiveReading({ tocOpen: false })}
+      />}
+
+      <main className={'reader-main' + (readerDocument ? ' has-document' : ' is-home') + ((pdfReaderDocument || ofdReaderDocument) ? ' has-paged-document' : '')}>
+        {activeError && <div className={'reader-alert' + (missingOnDisk ? ' is-warning' : '')} role={missingOnDisk ? 'status' : 'alert'}><span>{displayedActiveError}</span>{activeTab && <button onClick={refresh}>{t('重试')}</button>}{!activeTab && <button onClick={() => setError('')} aria-label={t('关闭提示')}><X size={15} /></button>}</div>}
         {readerDocument ? <>
           {readerDocument.missingResources.length > 0 && <div className="resource-notice" role="status">
             <span>{t('部分资源无法显示：{resources}{more}', {
@@ -2185,18 +2496,48 @@ export function App() {
             onKeyDown={onArticleKeyDown}
             style={{ '--reader-zoom': zoom / 100 } as CSSProperties}
           />
-        </> : activeTab ? <section className="reader-tab-load-state" role={activeTab.status === 'error' ? 'alert' : 'status'}>
-          {activeTab.status === 'loading' ? <LoaderCircle className="is-spinning" size={22} /> : <FileText size={22} />}
-          <strong>{activeTab.displayName}</strong>
-          <span>{t(activeTab.error || (activeTab.status === 'loading' ? '正在读取 Markdown 文档…' : '文档尚未读取。'))}</span>
-          {activeTab.status !== 'loading' && <button className="open-button" onClick={refresh}><RefreshCw size={15} />{t('重试打开')}</button>}
-        </section> : <section className="welcome-panel">
-          <div className="welcome-logo">{logo}</div>
-          <div className="welcome-copy"><h1>{t('打开即读，简单纯粹。')}</h1><p>{t('选择一份 Markdown 文档，或将文件拖到这里。')}</p></div>
-          <button className="open-button primary" onClick={() => void chooseFile()}><FolderOpen size={16} /><span>{t('打开 Markdown 文件')}</span></button>
-          <span className="file-types">{t('支持 .md 和 .markdown')}</span>
-        </section>}
-        {dragging && <div className="drop-overlay"><div><BookOpen size={25} /><strong>{t('松开放入 Markdown 文档')}</strong><span>{t('支持 .md 和 .markdown')}</span></div></div>}
+        </> : pdfReaderDocument && activeTab ? <PdfViewer
+          ref={pdfViewerRef}
+          tabId={activeTab.id}
+          document={pdfReaderDocument}
+          locale={locale}
+          dark={actualTheme === 'dark'}
+          initialPage={activeTab.reading.pdfPage ?? 1}
+          initialScale={activeTab.reading.pdfScale ?? 1}
+          initialRotation={activeTab.reading.pdfRotation ?? 0}
+          searchOpen={searchOpen}
+          searchQuery={searchQuery}
+          searchIndex={searchIndex}
+          onReadingChange={onPdfReadingChange}
+          onSearchCountChange={onPdfSearchCountChange}
+          onSearchPendingChange={setTabSearchPending}
+        /> : ofdReaderDocument && activeTab ? <Suspense fallback={<ReaderTabLoadState tab={{ ...activeTab, status: 'loading' }} onRetry={refresh} />}><OfdViewer
+          ref={ofdViewerRef}
+          tabId={activeTab.id}
+          document={ofdReaderDocument}
+          locale={locale}
+          dark={actualTheme === 'dark'}
+          systemFontFallback={settings.ofdSystemFontFallback}
+          fallbackFont={settings.ofdFallbackFont}
+          initialPage={activeTab.reading.ofdPage ?? 1}
+          initialScale={activeTab.reading.ofdScale ?? 1}
+          initialRotation={activeTab.reading.ofdRotation ?? 0}
+          searchOpen={searchOpen}
+          searchQuery={searchQuery}
+          onReadingChange={onOfdReadingChange}
+          onPageCountChange={onOfdPageCountChange}
+          onOutlineChange={onOfdOutlineChange}
+          onSearchChange={onOfdSearchChange}
+          onSearchPendingChange={setTabSearchPending}
+        /></Suspense> : activeTab
+          ? <ReaderTabLoadState tab={activeTab} onRetry={refresh} />
+          : <ReaderWelcomePanel
+            logo={logo}
+            recents={recents}
+            onOpen={() => { void chooseFile() }}
+            onOpenRecent={path => { void openDocuments([path], 'recent') }}
+          />}
+        {dragging && <div className="drop-overlay"><div><BookOpen size={25} /><strong>{t('松开放入文档')}</strong><span>{t('支持 .md、.markdown、.pdf 和 .ofd')}</span></div></div>}
       </main>
 
       {fallbackSearch && searchOpen && !mediaContent && <SearchHighlightCanvas
@@ -2207,7 +2548,7 @@ export function App() {
       />}
 
       <footer className="reader-footer">
-        <div className="footer-left"><span className="readonly-dot" />{t('只读')}{readerDocument && <><span className="footer-separator">·</span><span className="footer-file-size">{formatByteSize(readerDocument.byteSize)}</span></>}</div>
+        <div className="footer-left"><span className="readonly-dot" />{t('只读')}{activeDocument && <><span className="footer-separator">·</span><span className="footer-file-size">{formatByteSize(activeDocument.byteSize)}</span></>}</div>
         {readerDocument && <div className="zoom-controls" aria-label={t('阅读缩放')}>
           <button className="icon-button compact" onClick={() => setZoom(value => Math.max(85, value - 5))} disabled={zoom <= 85} aria-label={t('缩小字号')}><ZoomOut size={15} /></button>
           <button className="zoom-value" onClick={() => setZoom(100)} title={t('恢复默认缩放（⌘0 / Ctrl+0）')}>{zoom}%</button>

@@ -205,16 +205,19 @@ export function SettingsDialog({
               <div className="settings-section-heading"><h3>{t('阅读与外观')}</h3><p>{t('偏好会立即应用，并保存在本机。')}</p></div>
               <fieldset className="settings-field">
                 <legend>{t('界面语言')}</legend>
-                <select
-                  className="settings-language-select"
-                  aria-label={t('界面语言')}
-                  value={settings.locale ?? 'zh-CN'}
-                  onChange={event => onSettingsChange({ locale: event.target.value as ReaderSettingsV1['locale'] })}
-                >
-                  <option value="zh-CN">简体中文</option>
-                  <option value="en">English</option>
-                  <option value="ja">日本語</option>
-                </select>
+                <div className="settings-segmented" role="group" aria-label={t('界面语言')}>
+                  {([
+                    { value: 'zh-CN', label: '简体中文' },
+                    { value: 'en', label: 'English' },
+                    { value: 'ja', label: '日本語' },
+                  ] as const).map(choice => <button
+                    key={choice.value}
+                    type="button"
+                    className={(settings.locale ?? 'zh-CN') === choice.value ? 'is-selected' : ''}
+                    aria-pressed={(settings.locale ?? 'zh-CN') === choice.value}
+                    onClick={() => onSettingsChange({ locale: choice.value })}
+                  >{choice.label}</button>)}
+                </div>
                 <p className="settings-field-hint">{t('更改 MdStudio 界面语言，不会翻译文档内容。')}</p>
               </fieldset>
               <fieldset className="settings-field">
@@ -261,6 +264,21 @@ export function SettingsDialog({
                 </div>
               </fieldset>
 
+              <fieldset className="settings-field">
+                <legend>{t('OFD 字体')}</legend>
+                <div className="settings-toggle-row settings-ofd-fallback-toggle">
+                  <div><strong>{t('自动使用系统字体替代')}</strong><span>{t('优先匹配文档同名字体，并按字形覆盖补充中文字体。')}</span></div>
+                  <button type="button" className="settings-switch" role="switch" aria-checked={settings.ofdSystemFontFallback} aria-label={t('自动使用系统字体替代')} onClick={() => onSettingsChange({ ofdSystemFontFallback: !settings.ofdSystemFontFallback })}><span /></button>
+                </div>
+                <div id="ofd-fallback-font-label" className="settings-subfield-label">{t('默认兜底字体')}</div>
+                <div className="settings-segmented" role="group" aria-labelledby="ofd-fallback-font-label">
+                  <button type="button" className={settings.ofdFallbackFont === 'auto' ? 'is-selected' : ''} aria-pressed={settings.ofdFallbackFont === 'auto'} onClick={() => onSettingsChange({ ofdFallbackFont: 'auto' })}>{t('自动')}</button>
+                  <button type="button" className={settings.ofdFallbackFont === 'source-han-sans' ? 'is-selected' : ''} aria-pressed={settings.ofdFallbackFont === 'source-han-sans'} onClick={() => onSettingsChange({ ofdFallbackFont: 'source-han-sans' })}>{t('思源黑体')}</button>
+                  <button type="button" className={settings.ofdFallbackFont === 'source-han-serif' ? 'is-selected' : ''} aria-pressed={settings.ofdFallbackFont === 'source-han-serif'} onClick={() => onSettingsChange({ ofdFallbackFont: 'source-han-serif' })}>{t('思源宋体')}</button>
+                </div>
+                <p className="settings-field-hint">{t('字体缺失时会显示诊断提示。当前安装包未包含思源字体文件；若系统也没有匹配字体，特殊文字仍可能缺失。')}</p>
+              </fieldset>
+
               <div className="settings-reset-row">
                 <span>{t('仅重置本页阅读偏好')}</span>
                 <button type="button" className="settings-secondary-button" onClick={() => onSettingsChange({
@@ -296,7 +314,7 @@ export function SettingsDialog({
                   <div><h4 id="settings-recents-title">{t('最近文件')}</h4><span>{recents.length} / 20</span></div>
                   <button type="button" className="settings-text-button" disabled={recents.length === 0} onClick={() => setConfirmAction('recents')}>{t('清空列表')}</button>
                 </div>
-                {recents.length === 0 ? <p className="settings-empty">{t('还没有最近打开的 Markdown 文件。')}</p> : <ul className="settings-recent-list">
+                {recents.length === 0 ? <p className="settings-empty">{t('还没有最近打开的文件。')}</p> : <ul className="settings-recent-list">
                   {recents.map(item => <li key={item.path} title={item.path}>
                     <button type="button" className="settings-recent-open" onClick={() => onOpenRecent(item.path)}>
                       <strong>{fileName(item.path)}</strong><span>{item.path}</span>

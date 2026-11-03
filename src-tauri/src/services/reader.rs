@@ -114,11 +114,18 @@ pub struct ReaderPerformanceTimings {
 pub fn load_document(file_path: &str) -> Result<ReaderDocument, ReaderError> {
     #[cfg(feature = "perf-benchmark")]
     let total_started = Instant::now();
-    let requested_path = PathBuf::from(file_path);
-    if !is_markdown_path(&requested_path) {
+    let inspected = crate::services::documents::inspect_document_path(file_path).map_err(
+        |error| match error {
+            crate::services::documents::DocumentPathError::Io(error) => ReaderError::Io(error),
+            crate::services::documents::DocumentPathError::InvalidPath(_) => {
+                ReaderError::InvalidPath(file_path.to_string())
+            }
+        },
+    )?;
+    if inspected.document_type != crate::services::documents::DocumentType::Markdown {
         return Err(ReaderError::InvalidPath(file_path.to_string()));
     }
-    let path = requested_path.canonicalize()?;
+    let path = PathBuf::from(inspected.canonical_path);
     let metadata = fs::metadata(&path)?;
     if !metadata.is_file() {
         return Err(ReaderError::InvalidPath(file_path.to_string()));
@@ -452,45 +459,25 @@ fn write_attribute(output: &mut dyn Write, value: &str) -> fmt::Result {
 }
 
 fn is_markdown_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
-        })
+    crate::services::documents::document_type(path)
+        == Some(crate::services::documents::DocumentType::Markdown)
 }
 
 /// 返回稳定的文档身份路径。已存在的文件使用真实 canonical 路径；
 /// 刚被删除但父目录仍存在的文件保留规范化父目录，以便显示可重试的标签。
 pub fn normalize_markdown_path(file_path: &str) -> Result<String, ReaderError> {
-    let requested = PathBuf::from(file_path);
-    if !is_markdown_path(&requested) {
+    let inspected = crate::services::documents::inspect_document_path(file_path).map_err(
+        |error| match error {
+            crate::services::documents::DocumentPathError::Io(error) => ReaderError::Io(error),
+            crate::services::documents::DocumentPathError::InvalidPath(_) => {
+                ReaderError::InvalidPath(file_path.to_string())
+            }
+        },
+    )?;
+    if inspected.document_type != crate::services::documents::DocumentType::Markdown {
         return Err(ReaderError::InvalidPath(file_path.to_string()));
     }
-
-    let normalized = match requested.canonicalize() {
-        Ok(path) => {
-            if !fs::metadata(&path)?.is_file() {
-                return Err(ReaderError::InvalidPath(file_path.to_string()));
-            }
-            path
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let name = requested
-                .file_name()
-                .ok_or_else(|| ReaderError::InvalidPath(file_path.to_string()))?;
-            let parent = requested
-                .parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            let parent = parent.canonicalize()?;
-            if !parent.is_dir() {
-                return Err(ReaderError::InvalidPath(file_path.to_string()));
-            }
-            parent.join(name)
-        }
-        Err(error) => return Err(ReaderError::Io(error)),
-    };
-    Ok(normalized.to_string_lossy().into_owned())
+    Ok(inspected.canonical_path)
 }
 
 fn is_safe_https_url(value: &str) -> bool {
@@ -1000,20 +987,21 @@ mod tests {
     }
 
     #[test]
-    fn meeting_flow_fixture_is_an_unmodified_copy_of_the_existing_document_block() {
+    fn meeting_flow_fixture_matches_the_source_document_when_available() {
         let original_path = project_fixture("09-会智通业务流程图.md");
-        let original_bytes = fs::read(&original_path).unwrap();
-        let original = std::str::from_utf8(&original_bytes).unwrap();
         let fixture_path = mermaid_fixture("meeting-flow.md");
         let fixture_markdown = fs::read_to_string(&fixture_path).unwrap();
-        let expected_source = first_mermaid_source(original).unwrap();
         let fixture_source = first_mermaid_source(&fixture_markdown).unwrap();
-        assert_eq!(fixture_source, expected_source);
-
         let document = load_document(fixture_path.to_str().unwrap()).unwrap();
         assert_eq!(document.mermaid_diagrams.len(), 1);
-        assert_eq!(document.mermaid_diagrams[0].source, expected_source);
-        assert_eq!(fs::read(original_path).unwrap(), original_bytes);
+        assert_eq!(document.mermaid_diagrams[0].source, fixture_source);
+
+        if original_path.is_file() {
+            let original_bytes = fs::read(&original_path).unwrap();
+            let original = std::str::from_utf8(&original_bytes).unwrap();
+            assert_eq!(fixture_source, first_mermaid_source(original).unwrap());
+            assert_eq!(fs::read(original_path).unwrap(), original_bytes);
+        }
     }
 
     #[test]

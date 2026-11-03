@@ -1,3 +1,5 @@
+import type { DocumentSession, DocumentType } from '../documents/core/types'
+
 export type ReaderTabStatus = 'loading' | 'ready' | 'error' | 'missing'
 
 export type ReaderReadingState = {
@@ -10,16 +12,25 @@ export type ReaderReadingState = {
   searchMatchIndex: number
   searchMatchCount: number
   tocOpen: boolean
+  pdfPage?: number
+  pdfScale?: number
+  pdfRotation?: number
+  ofdPage?: number
+  ofdPageCount?: number
+  ofdScale?: number
+  ofdRotation?: number
 }
 
 export type ReaderTab<TDocument> = {
   id: string
   canonicalPath: string
+  documentType: DocumentType
   displayName: string
   status: ReaderTabStatus
   stale: boolean
   error?: string
   document: TDocument | null
+  session: DocumentSession<TDocument> | null
   reading: ReaderReadingState
 }
 

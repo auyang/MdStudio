@@ -37,6 +37,18 @@ async function renderDialog(open = true) {
   })
 }
 
+async function rerenderDialog(open = true) {
+  await act(async () => {
+    root.render(<SettingsDialog
+      open={open}
+      settings={settings}
+      recents={[{ path: '/docs/指南.md', openedAt: 100 }]}
+      logoSrc="brand.svg"
+      {...callbacks}
+    />)
+  })
+}
+
 describe('阅读设置中心', () => {
   beforeEach(() => {
     settings = { ...DEFAULT_READER_SETTINGS }
@@ -66,6 +78,24 @@ describe('阅读设置中心', () => {
     expect(callbacks.onSettingsChange).toHaveBeenCalledWith({ readingWidth: 'wide' })
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.includes('恢复阅读默认值'))?.click())
     expect(callbacks.onSettingsChange).toHaveBeenLastCalledWith({ theme: 'system', fontSizePx: 16, readingWidth: 'wide' })
+  })
+
+  it('提供 OFD 系统字体替代开关和主题样式的默认字体选项', async () => {
+    await renderDialog()
+    const fallbackSwitch = host.querySelector<HTMLButtonElement>('[aria-label="自动使用系统字体替代"]')!
+    expect(fallbackSwitch.getAttribute('aria-checked')).toBe('true')
+    await act(async () => fallbackSwitch.click())
+    expect(callbacks.onSettingsChange).toHaveBeenCalledWith({ ofdSystemFontFallback: false })
+
+    const fallbackFonts = host.querySelector<HTMLDivElement>('[role="group"][aria-labelledby="ofd-fallback-font-label"]')!
+    expect(fallbackFonts.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent).toBe('自动')
+    await act(async () => fallbackFonts.querySelector<HTMLButtonElement>('button:nth-child(3)')?.click())
+    expect(callbacks.onSettingsChange).toHaveBeenCalledWith({ ofdFallbackFont: 'source-han-serif' })
+    settings = { ...settings, ofdFallbackFont: 'source-han-serif' }
+    await rerenderDialog()
+    const updatedFallbackFonts = host.querySelector<HTMLDivElement>('[role="group"][aria-labelledby="ofd-fallback-font-label"]')!
+    expect(updatedFallbackFonts.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent).toBe('思源宋体')
+    expect(host.textContent).toContain('当前安装包未包含思源字体文件')
   })
 
   it('把最近文件与三个独立清除操作放在启动与历史分类', async () => {

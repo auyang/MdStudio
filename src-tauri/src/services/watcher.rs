@@ -317,14 +317,42 @@ fn is_markdown_or_directory(path: &Path) -> bool {
     if path.is_dir() {
         return true;
     }
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
-        })
+    matches!(
+        crate::services::documents::document_type(path),
+        Some(
+            crate::services::documents::DocumentType::Markdown
+                | crate::services::documents::DocumentType::Pdf
+                | crate::services::documents::DocumentType::Ofd
+        )
+    )
 }
 
 fn hash_file(path: &Path) -> Option<String> {
+    let kind = crate::services::documents::document_type(path);
+    if matches!(
+        kind,
+        Some(
+            crate::services::documents::DocumentType::Pdf
+                | crate::services::documents::DocumentType::Ofd
+        )
+    ) {
+        let metadata = fs::metadata(path).ok()?;
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        let prefix = if kind == Some(crate::services::documents::DocumentType::Ofd) {
+            "ofd"
+        } else {
+            "pdf"
+        };
+        return Some(format!(
+            "{prefix}:{}:{}",
+            metadata.len(),
+            modified.as_micros()
+        ));
+    }
     fs::read(path)
         .ok()
         .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
@@ -343,9 +371,11 @@ mod tests {
     }
 
     #[test]
-    fn only_markdown_files_and_directories_are_forwarded() {
+    fn markdown_pdf_ofd_files_and_directories_are_forwarded() {
         assert!(is_markdown_or_directory(Path::new("doc.md")));
         assert!(is_markdown_or_directory(Path::new("doc.MARKDOWN")));
+        assert!(is_markdown_or_directory(Path::new("scan.pdf")));
+        assert!(is_markdown_or_directory(Path::new("invoice.ofd")));
         assert!(!is_markdown_or_directory(Path::new("image.png")));
     }
 }

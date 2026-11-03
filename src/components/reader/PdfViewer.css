@@ -1,0 +1,37 @@
+/* PDF.js TextLayer 所需样式，按 pdfjs-dist 6.4.299 官方 text layer 结构局部适配。 */
+.pdf-reader {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  width: min(100%, var(--reader-width));
+  height: 100%;
+  min-height: 0;
+  margin: 0 auto;
+  color: var(--text);
+}
+.pdf-viewer-scroll { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; padding: 2px 0 45px; overflow: auto; overscroll-behavior: contain; }
+.pdf-page-wrap { position: relative; display: flex; justify-content: center; width: 100%; min-height: 510px; margin: 0 auto 18px; scroll-margin-top: 64px; }
+.pdf-page { position: relative; flex: 0 0 auto; overflow: hidden; border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); background: #fff; box-shadow: 0 3px 16px rgb(15 23 42 / 12%); --user-unit: 1; --total-scale-factor: calc(var(--scale-factor, 1) * var(--user-unit)); --scale-round-x: 1px; --scale-round-y: 1px; }
+.pdf-page-canvas { position: absolute; z-index: 0; inset: 0; display: block; max-width: none; }
+.pdf-page .pdf-text-layer { position: absolute; z-index: 1; inset: 0; overflow: hidden; color-scheme: only light; line-height: 1; letter-spacing: normal; word-spacing: normal; text-align: initial; text-size-adjust: none; transform-origin: 0 0; caret-color: CanvasText; --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); }
+.pdf-text-layer[data-main-rotation="90"] { transform: rotate(90deg) translateY(-100%); }
+.pdf-text-layer[data-main-rotation="180"] { transform: rotate(180deg) translate(-100%, -100%); }
+.pdf-text-layer[data-main-rotation="270"] { transform: rotate(270deg) translateX(-100%); }
+.pdf-text-layer > span, .pdf-text-layer > br, .pdf-text-layer .markedContent span { position: absolute; color: transparent; white-space: pre; cursor: text; user-select: text; transform-origin: 0 0; }
+.pdf-text-layer > :not(.markedContent), .pdf-text-layer .markedContent span:not(.markedContent) { z-index: 1; font-size: calc(var(--text-scale-factor) * var(--font-height, 0)); transform: rotate(var(--rotate, 0deg)) scaleX(var(--scale-x, 1)); }
+.pdf-text-layer .markedContent { display: contents; }
+.pdf-text-layer span[role="img"] { user-select: none; cursor: default; }
+.pdf-text-layer ::selection { background: rgb(37 99 235 / 28%); }
+.pdf-text-layer mark.pdf-search-match { border-radius: 2px; background: rgb(250 204 21 / 55%); color: transparent; }
+.pdf-text-layer mark.pdf-search-match.is-current { outline: 1px solid #d97706; background: rgb(249 115 22 / 48%); }
+.pdf-page-loading { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; background: #fff; color: #64748b; font-size: 12px; }
+.pdf-page-number { position: absolute; top: 5px; right: max(0px, calc((100% - 816px) / 2 - 32px)); color: var(--text-soft); font-size: 10px; }
+.pdf-reader-notice, .pdf-reader-error { width: min(100%, var(--reader-width)); margin: 0 auto 12px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 7px; color: var(--text-secondary); background: var(--surface-muted); font-size: 12px; }
+.pdf-reader-error { border-color: #d97706; color: #92400e; background: #fffbeb; }
+:root[data-theme="dark"] .pdf-page { border-color: #475569; }
+:root[data-theme="dark"] .pdf-page-loading { background: #fff; color: #64748b; }
+:root[data-theme="dark"] .pdf-reader-error { border-color: #854d0e; color: #fde68a; background: #302518; }
+@media (max-width: 600px) {
+  .pdf-page-wrap { min-height: 430px; }
+  .pdf-page-number { right: 4px; }
+}
