@@ -6,17 +6,16 @@ import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'r
 import type { ForwardedRef } from 'react'
 import '@ofdrw/ofdrw-viewer-ui/style.css'
 import './OfdViewer.css'
-import type { AppLocale, OfdFallbackFont } from '../../features/reader/preferences'
+import type { AppLocale, OfdFallbackFont, ReadingWidth } from '../../features/reader/preferences'
 import { useI18n } from '../../features/i18n'
 import type { OfdReaderDocument } from '../../features/documents/ofd/reader'
-
-type Diagnostic = { code: string; message: string; pageIndex?: number }
 
 type OfdViewerProps = {
   tabId: string
   document: OfdReaderDocument
   locale: AppLocale
   dark: boolean
+  readingWidth?: ReadingWidth
   systemFontFallback?: boolean
   fallbackFont?: OfdFallbackFont
   initialPage: number
@@ -29,19 +28,7 @@ type OfdViewerProps = {
   onOutlineChange: (tabId: string, outline: readonly OutlineNode[]) => void
   onSearchChange: (tabId: string, count: number, index: number) => void
   onSearchPendingChange: (tabId: string, pending: boolean) => void
-}
-
-function addDiagnostic(current: Diagnostic[], next: Diagnostic): Diagnostic[] {
-  const items = [next, ...current.filter(item => item.code !== next.code || item.message !== next.message)]
-  return items.slice(0, 8)
-}
-
-function diagnosticMessage(item: Diagnostic, locale: AppLocale, t: (source: string, values?: Record<string, string | number>) => string): string {
-  if (locale !== 'ja') return item.message
-  if (item.code === 'W_FONT_MISSING') return t('OFD 引擎诊断：缺少字体，部分文字可能无法显示。')
-  if (item.code === 'W_IMAGE_DECODE') return t('OFD 引擎诊断：图片无法解码。')
-  if (item.code === 'W_TEXT_EMPTY') return t('OFD 引擎诊断：没有可搜索的文字。')
-  return t('OFD 引擎诊断代码：{code}。请联系支持时提供此代码。', { code: item.code })
+  onFitHeightReady?: (fitHeight: (() => void) | null) => void
 }
 
 function OfdViewerComponent({
@@ -49,6 +36,7 @@ function OfdViewerComponent({
   tabId,
   locale,
   dark,
+  readingWidth = 'wide',
   systemFontFallback = false,
   fallbackFont = 'auto',
   initialPage,
@@ -61,20 +49,21 @@ function OfdViewerComponent({
   onOutlineChange,
   onSearchChange,
   onSearchPendingChange,
+  onFitHeightReady,
 }: OfdViewerProps, forwardedRef: ForwardedRef<OFDViewerHandle>) {
   const t = useI18n()
   const [viewerReady, setViewerReady] = useState(false)
   const [retryKey, setRetryKey] = useState(0)
-  const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([])
   const [error, setError] = useState('')
   const [currentPage, setCurrentPage] = useState(initialPage)
   const [currentScale, setCurrentScale] = useState(initialScale)
   const [currentRotation, setCurrentRotation] = useState(initialRotation)
+  const previousReadingWidthRef = useRef(readingWidth)
+  const pendingWidthFitRef = useRef(false)
   const [fontResolution, setFontResolution] = useState<{
     sessionId: string
     sources: Array<{ index: number; family: string; coveredCharacters: number; requiredCharacters: number }>
     aliases: string[][]
-    missingFontNames: string[]
   } | null>(null)
   const [fontsReady, setFontsReady] = useState(!systemFontFallback || document.fontResources.length === 0)
   const viewerHandleRef = useRef<OFDViewerHandle | null>(null)
@@ -94,6 +83,21 @@ function OfdViewerComponent({
     if (!main) return
     main.scrollTop = pending.scrollTop
     pendingScrollRestoreRef.current = null
+  }, [])
+  const fitHeight = useCallback(() => {
+    const handle = viewerHandleRef.current
+    const state = handle?.getState()
+    const main = viewerHostRef.current?.querySelector<HTMLElement>('.ofd-viewer__main')
+    if (!handle || !state || !main) return
+    const page = main.querySelector<HTMLElement>(`.ofd-page[data-page-number="${state.view.pageNumber}"] .ofd-page__surface`)
+    if (!page) return
+    const style = window.getComputedStyle(main)
+    const verticalPadding = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0)
+    const availableHeight = main.clientHeight - verticalPadding - 16
+    const renderedHeight = page.getBoundingClientRect().height
+    if (availableHeight > 0 && renderedHeight > 0) {
+      handle.setScale(state.view.scale * availableHeight / renderedHeight)
+    }
   }, [])
   const setViewerHandle = useMemo(() => {
     const sessionId = fontResolution?.sessionId
@@ -127,14 +131,33 @@ function OfdViewerComponent({
   }, [document.filePath, fontResolution?.sessionId, forwardedRef, releaseFontSession])
 
   useEffect(() => {
+    onFitHeightReady?.(fitHeight)
+    return () => onFitHeightReady?.(null)
+  }, [fitHeight, onFitHeightReady])
+
+  useEffect(() => {
     setViewerReady(false)
-    setDiagnostics([])
     setError('')
     setCurrentPage(initialPage)
     setCurrentScale(initialScale)
     setCurrentRotation(initialRotation)
     onSearchChange(tabId, 0, 0)
   }, [document.filePath, document.modifiedUnixMicros])
+
+  useEffect(() => {
+    if (previousReadingWidthRef.current !== readingWidth) {
+      previousReadingWidthRef.current = readingWidth
+      pendingWidthFitRef.current = true
+    }
+    if (!pendingWidthFitRef.current || !viewerReady) return
+    const frame = requestAnimationFrame(() => {
+      const handle = viewerHandleRef.current
+      if (!handle) return
+      handle.setZoomMode(readingWidth === 'fit' ? 'page-fit' : 'page-width')
+      pendingWidthFitRef.current = false
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [readingWidth, viewerReady])
 
   useEffect(() => {
     let active = true
@@ -150,7 +173,6 @@ function OfdViewerComponent({
       sessionId: string
       sources: Array<{ index: number; family: string; coveredCharacters: number; requiredCharacters: number }>
       aliases: string[][]
-      missingFontNames: string[]
     }>('resolve_ofd_system_fonts', {
       sessionId,
       requests: document.fontResources,
@@ -161,16 +183,8 @@ function OfdViewerComponent({
         return
       }
       setFontResolution(result)
-      if (result.missingFontNames.length > 0) {
-        setDiagnostics(items => addDiagnostic(items, {
-          code: 'SYSTEM_FONT_MISSING',
-          message: t('没有找到可用的系统替代字体：{fonts}', { fonts: result.missingFontNames.slice(0, 4).join('、') }),
-        }))
-      }
-    }).catch(reason => {
+    }).catch(() => {
       if (!active) return
-      const message = reason instanceof Error ? reason.message : String(reason)
-      setDiagnostics(items => addDiagnostic(items, { code: 'SYSTEM_FONT_SERVICE', message: t('系统字体匹配失败：{reason}', { reason: message }) }))
       setFontResolution(null)
     }).finally(() => {
       if (active) setFontsReady(true)
@@ -192,8 +206,6 @@ function OfdViewerComponent({
     try {
       await handle.find(searchQuery)
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason)
-      setDiagnostics(items => addDiagnostic(items, { code: 'FIND', message }))
       onSearchPendingChange(tabId, false)
     }
   }, [onSearchChange, onSearchPendingChange, searchOpen, searchQuery, tabId, viewerReady])
@@ -219,21 +231,10 @@ function OfdViewerComponent({
   }, [forwardedRef, onSearchPendingChange, runSearch, tabId])
 
   return <section className="ofd-reader" aria-label={t('OFD 阅读器')}>
-    {document.hasSignatures && <div className="ofd-signature-notice" role="status">{t('包含签章；签章未验证。')}</div>}
-    {locale === 'zh-CN'
-      ? document.resourceWarnings.map((warning, index) => <div className="ofd-reader-notice" role="status" key={`${warning}-${index}`}>{t('OFD 资源提示：{warning}', { warning })}</div>)
-      : document.resourceWarnings.length > 0 && <div className="ofd-reader-notice" role="status">{t('OFD 文档中有 {count} 项资源无法显示。', { count: document.resourceWarnings.length })}</div>}
-    {diagnostics.length > 0 && <div className="ofd-diagnostics" role="status" aria-live="polite">
-      <strong>{t('OFD 阅读诊断')}</strong>
-      <ul>{diagnostics.map((item, index) => <li key={`${item.code}-${index}`}>
-        <code>{item.code}</code>{item.pageIndex === undefined ? '' : ` · ${t('第 {page} 页', { page: item.pageIndex + 1 })}`}: {diagnosticMessage(item, locale, t)}
-      </li>)}</ul>
-    </div>}
     {error && <div className="ofd-reader-error" role="alert">
       <span>{t('OFD 页面渲染失败：{reason}', { reason: error })}</span>
       <button type="button" onClick={() => {
         setError('')
-        setDiagnostics([])
         setViewerReady(false)
         if (systemFontFallback && document.fontResources.length > 0) setFontsReady(false)
         setRetryKey(key => key + 1)
@@ -279,12 +280,6 @@ function OfdViewerComponent({
         onDocumentOpen={({ pageCount }) => {
           onPageCountChange(tabId, pageCount)
           onOutlineChange(tabId, viewerHandleRef.current?.getState()?.document.outline ?? [])
-          if (pageCount !== document.pageCount) {
-            setDiagnostics(items => addDiagnostic(items, {
-              code: 'PAGE_COUNT_MISMATCH',
-              message: t('OFD 校验页数与阅读器识别页数不一致。'),
-            }))
-          }
         }}
         onPageChange={({ pageNumber }) => {
           setCurrentPage(pageNumber)
@@ -303,19 +298,8 @@ function OfdViewerComponent({
           onSearchChange(tabId, total, Math.max(0, current - 1))
           onSearchPendingChange(tabId, false)
         }}
-        onWarning={warning => setDiagnostics(items => addDiagnostic(items, {
-          code: warning.code,
-          message: warning.message,
-          pageIndex: warning.pageIndex,
-        }))}
         onError={viewerError => {
-          const diagnostic = {
-            code: viewerError.code,
-            message: viewerError.message,
-            pageIndex: viewerError.pageIndex,
-          }
-          setDiagnostics(items => addDiagnostic(items, diagnostic))
-          setError(diagnosticMessage(diagnostic, locale, t))
+          setError(viewerError.message)
         }}
       />}
     </div>

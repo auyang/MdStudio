@@ -231,6 +231,12 @@ pub fn run() {
         .manage(services::system_fonts::SystemFontService::default())
         .setup(|app| {
             app.manage(FileWatcherService::default());
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                // 配置文件已启用 Overlay；启动时重新应用一次，让 AppKit 在首次显示前
+                // 完成标题栏布局，避免红黄绿按钮暂时停留在系统默认位置。
+                let _ = window.set_title_bar_style(tauri::TitleBarStyle::Overlay);
+            }
             Ok(())
         });
     #[cfg(not(feature = "perf-benchmark"))]

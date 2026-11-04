@@ -1,13 +1,26 @@
 # MdStudio 多格式阅读器路线状态
 
-current_phase: P5-A macOS Native Window Fusion
+current_phase: P6-B OFD High-Fidelity Rendering and Compatibility
 target_version: 0.2.0
 p3_decision: GO_A_CONDITIONAL
 p4_user_acceptance: accepted（2026-11-03）
-status: awaiting_acceptance（仅 P5-A；P5 总阶段仍阻塞）
-parent_phase_status: blocked（OFD 中文正文及系统文件关联/其他平台验证未完成）
-next_phase: none（等待 P5-A 验收；不得自动进入后续阶段）
-current_subphase_status: awaiting_acceptance（自动测试、macOS 构建和三格式主界面检查完成；拖动位移与窄窗实测未能由桌面接口确认）
+status: blocked
+blockers: [应用内 CJK 兜底字体缺失, OFD 授权样本矩阵不足, JPEG Viewer 空白问题未复测, JBIG2/TIFF 解码插件无法从生产 UI 注入, Windows/Linux 未测]
+next_phase: none（P6-B 未解除阻塞；不得自动进入 P6-C）
+parent_phase_status: blocked（P5 全阶段已有 OFD 正文兼容和平台集成遗留问题）
+
+## P6-B：OFD 高保真渲染与兼容性增强（当前阶段）
+
+- 本轮先审计了 `OfdViewer`、`system_fonts.rs`、`ofd_reader.rs`、本地 OFDRW 类型声明、现有 OFD 样本及 OFD_FONT_FALLBACK 报告。系统字体匹配已实现但未验收通过：上阶段状态仍是 blocked，应用内 CJK 字体缺失，macOS 发票仍有未映射的 `W_FONT_MISSING`，Windows/Linux 未测。
+- P6-B 曾加入 OFD 兼容性诊断入口；按用户后续要求，当前阅读页不显示兼容性诊断、字体/资源警告、诊断计数或签章提示。页面渲染失败提示保留；主题和设置入口位于底部状态栏阅读宽度旁。
+- 引擎及 UI 锁定版本均为 0.1.7。Engine 公开支持宿主图片解码及 JBIG2/TIFF `ImageDecoderPlugin`，公开 warning API；但 Viewer UI React options 没有公开 `imageDecoders` 透传入口。未修改第三方源码或切换生产渲染路线。
+- 仓库当前只有 1 份 OFD 发票样本，许可/脱敏授权记录不足；公文、票据、嵌入字体、复杂图层/透明度、JPEG/JBIG2、A4/A5/自定义页面的真实对照矩阵未建立。既有 POC 的双页 JPEG Viewer 空白问题和字体缺字未解除。
+- 自动测试/构建结果见 [P6-B OFD 兼容性报告](P6B_OFD_COMPATIBILITY_REPORT.md)，逐项状态见 [渲染测试矩阵](P6B_RENDER_TEST_MATRIX.md)，约束见 [已知限制](P6B_KNOWN_LIMITATIONS.md)。
+- P6-B 当前 `blocked`，等待授权样本、内置字体许可/资产和稳定的图像插件接入路径；停止于 P6-B，不执行 P6-C，不升级版本或发布应用。
+
+## P5-A 历史状态
+
+P5-A 曾以 `awaiting_acceptance` 停止；其报告和历史内容保留在下方，不能覆盖当前 P6-B 的阻塞结论。
 
 ## P3 本轮复验（2026-11-03）
 

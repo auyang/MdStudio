@@ -113,8 +113,9 @@ describe('OFD 阅读器适配组件', () => {
       source: sample.bytes,
       debug: { console: false },
     })
-    expect(host.textContent).toContain('签章未验证')
-    expect(host.textContent).toContain('缺失资源')
+    expect(host.textContent).not.toContain('签章未验证')
+    expect(host.textContent).not.toContain('文档兼容性诊断')
+    expect(host.textContent).not.toContain('缺失资源')
     const props = viewerProbe.props as Record<string, (payload: never) => void>
     await act(async () => {
       props.onReady?.()
@@ -133,7 +134,7 @@ describe('OFD 阅读器适配组件', () => {
     expect(onSearchPendingChange).toHaveBeenLastCalledWith('ofd-tab', false)
   })
 
-  it('日语界面隐藏第三方未翻译文案并本地化 OFD 字体诊断', async () => {
+  it('日语界面隐藏第三方未翻译文案且阅读区不显示兼容性诊断', async () => {
     await act(async () => root.render(<I18nProvider locale="ja"><OfdViewer
       tabId="ofd-ja-tab"
       document={sample}
@@ -152,12 +153,39 @@ describe('OFD 阅读器适配组件', () => {
     /></I18nProvider>))
 
     expect(viewerProbe.props?.locale).toBe('zh-CN')
-    const props = viewerProbe.props as Record<string, (payload: never) => void>
-    await act(async () => props.onWarning({ code: 'W_FONT_MISSING', message: 'Font missing: KaiTi' } as never))
-    expect(host.textContent).toContain('必要なフォントが見つからず')
+    expect(host.textContent).not.toContain('文档兼容性诊断')
+    expect(host.textContent).not.toContain('互換性の診断')
     expect(host.textContent).not.toContain('Font missing: KaiTi')
-    expect(host.textContent).toContain('OFD 文書で表示できないリソースが 1 件あります。')
     expect(host.textContent).not.toContain('缺失资源：Doc/Res/a.png')
+  })
+
+  it('隐藏引擎兼容性警告但保留渲染错误提示', async () => {
+    await act(async () => root.render(<I18nProvider locale="zh-CN"><OfdViewer
+      tabId="ofd-diagnostics-tab"
+      document={{ ...sample, hasSignatures: false, resourceWarnings: [], fontResources: [] }}
+      locale="zh-CN"
+      dark={false}
+      initialPage={1}
+      initialScale={1}
+      initialRotation={0}
+      searchOpen={false}
+      searchQuery=""
+      onReadingChange={vi.fn()}
+      onPageCountChange={vi.fn()}
+      onOutlineChange={vi.fn()}
+      onSearchChange={vi.fn()}
+      onSearchPendingChange={vi.fn()}
+    /></I18nProvider>))
+
+    const props = viewerProbe.props as Record<string, (payload: never) => void>
+    await act(async () => {
+      props.onError({ code: 'E_PAGE_RENDER', message: '页面画布创建失败', pageIndex: 1 } as never)
+    })
+
+    expect(host.querySelector('[data-testid="ofd-compatibility-diagnostics"]')).toBeNull()
+    expect(host.textContent).not.toContain('文档兼容性诊断')
+    expect(host.textContent).toContain('OFD 页面渲染失败')
+    expect(host.textContent).toContain('页面画布创建失败')
   })
 
   it('渲染失败时保留阅读器区域和真实错误，可触发重试并释放组件实例', async () => {

@@ -276,7 +276,7 @@ export function SettingsDialog({
                   <button type="button" className={settings.ofdFallbackFont === 'source-han-sans' ? 'is-selected' : ''} aria-pressed={settings.ofdFallbackFont === 'source-han-sans'} onClick={() => onSettingsChange({ ofdFallbackFont: 'source-han-sans' })}>{t('思源黑体')}</button>
                   <button type="button" className={settings.ofdFallbackFont === 'source-han-serif' ? 'is-selected' : ''} aria-pressed={settings.ofdFallbackFont === 'source-han-serif'} onClick={() => onSettingsChange({ ofdFallbackFont: 'source-han-serif' })}>{t('思源宋体')}</button>
                 </div>
-                <p className="settings-field-hint">{t('字体缺失时会显示诊断提示。当前安装包未包含思源字体文件；若系统也没有匹配字体，特殊文字仍可能缺失。')}</p>
+                <p className="settings-field-hint">{t('字体缺失时部分文字可能无法显示。当前安装包未包含思源字体文件；若系统也没有匹配字体，特殊文字仍可能缺失。')}</p>
               </fieldset>
 
               <div className="settings-reset-row">

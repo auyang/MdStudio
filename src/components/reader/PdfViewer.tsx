@@ -1,7 +1,7 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import type { ForwardedRef } from 'react'
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport, TextLayer } from 'pdfjs-dist'
-import type { AppLocale } from '../../features/reader/preferences'
+import type { AppLocale, ReadingWidth } from '../../features/reader/preferences'
 import { translate } from '../../features/i18n'
 import type { PdfReaderDocument } from '../../features/documents/pdf/reader'
 import './PdfViewer.css'
@@ -13,6 +13,7 @@ type PdfViewerProps = {
   document: PdfReaderDocument
   locale: AppLocale
   dark: boolean
+  readingWidth?: ReadingWidth
   initialPage: number
   initialScale: number
   initialRotation: number
@@ -29,6 +30,7 @@ export type PdfViewerHandle = {
   zoomIn: () => void
   zoomOut: () => void
   fitWidth: () => void
+  fitHeight: () => void
   fitPage: () => void
   rotate: () => void
   resetZoom: () => void
@@ -237,7 +239,7 @@ const PdfPage = memo(function PdfPage({ pdf, pageNumber, scale, rotation, nearVi
   </div>
 })
 
-function PdfViewerComponent({ tabId, document, locale, dark, initialPage, initialScale, initialRotation, searchOpen, searchQuery, searchIndex, onReadingChange, onSearchCountChange, onSearchPendingChange }: PdfViewerProps, forwardedRef: ForwardedRef<PdfViewerHandle>) {
+function PdfViewerComponent({ tabId, document, locale, dark, readingWidth = 'wide', initialPage, initialScale, initialRotation, searchOpen, searchQuery, searchIndex, onReadingChange, onSearchCountChange, onSearchPendingChange }: PdfViewerProps, forwardedRef: ForwardedRef<PdfViewerHandle>) {
   const t = useCallback((value: string, parameters?: Record<string, string | number>) => translate(locale, value, parameters), [locale])
   const clampPage = useCallback((value: number) => Math.max(1, Math.min(document.pageCount, Math.trunc(value) || 1)), [document.pageCount])
   const initialPositionRef = useRef({ document, page: clampPage(initialPage) })
@@ -246,6 +248,8 @@ function PdfViewerComponent({ tabId, document, locale, dark, initialPage, initia
   const [scale, setScale] = useState(Math.max(MIN_SCALE, Math.min(MAX_SCALE, initialScale)))
   const [rotation, setRotation] = useState(((initialRotation % 360) + 360) % 360)
   const [nearPages, setNearPages] = useState<Set<number>>(() => new Set([1, Math.max(1, initialPage)]))
+  const previousReadingWidthRef = useRef(readingWidth)
+  const pendingWidthFitRef = useRef(false)
   const [searchMatches, setSearchMatches] = useState<PdfSearchMatch[]>([])
   const [hasText, setHasText] = useState(true)
   const [pageError, setPageError] = useState('')
@@ -394,21 +398,36 @@ function PdfViewerComponent({ tabId, document, locale, dark, initialPage, initia
     scrollToPage(safePage)
   }, [document.pageCount, scrollToPage])
 
-  const fitScale = async (mode: 'width' | 'page') => {
+  const fitScale = useCallback(async (mode: 'width' | 'height' | 'page') => {
     const container = viewerRef.current
     if (!container) return
     const pdfPage = await document.pdfDocument.getPage(page)
     const natural = pdfPage.getViewport({ scale: 1, rotation: (pdfPage.rotate + rotation) % 360 })
     const widthScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, (container.clientWidth - 48) / natural.width))
-    const heightScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, (window.innerHeight - 190) / natural.height))
-    setScale(mode === 'width' ? widthScale : Math.min(widthScale, heightScale))
-  }
+    const viewport = container.querySelector<HTMLElement>('.pdf-viewer-scroll')
+    const heightScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, ((viewport?.clientHeight ?? container.clientHeight) - 52) / natural.height))
+    setScale(mode === 'width' ? widthScale : mode === 'height' ? heightScale : Math.min(widthScale, heightScale))
+  }, [document.pdfDocument, page, rotation])
+
+  useEffect(() => {
+    if (previousReadingWidthRef.current !== readingWidth) {
+      previousReadingWidthRef.current = readingWidth
+      pendingWidthFitRef.current = true
+    }
+    if (!pendingWidthFitRef.current) return
+    const frame = requestAnimationFrame(() => {
+      pendingWidthFitRef.current = false
+      void fitScale(readingWidth === 'fit' ? 'page' : 'width')
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [fitScale, readingWidth])
 
   useImperativeHandle(forwardedRef, () => ({
     goToPage,
     zoomIn: () => setScale(value => Math.min(MAX_SCALE, Math.round((value + SCALE_STEP) * 100) / 100)),
     zoomOut: () => setScale(value => Math.max(MIN_SCALE, Math.round((value - SCALE_STEP) * 100) / 100)),
     fitWidth: () => { void fitScale('width') },
+    fitHeight: () => { void fitScale('height') },
     fitPage: () => { void fitScale('page') },
     rotate: () => setRotation(value => (value + 90) % 360),
     resetZoom: () => setScale(1),

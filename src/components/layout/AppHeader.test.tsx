@@ -23,8 +23,6 @@ function renderHeader(capabilities = { search: true, navigation: true }) {
     onPageChange: vi.fn(),
     onZoomIn: vi.fn(),
     onZoomOut: vi.fn(),
-    onFitWidth: vi.fn(),
-    onFitPage: vi.fn(),
     onRotate: vi.fn(),
     onResetZoom: vi.fn(),
   }
@@ -45,7 +43,6 @@ function renderHeader(capabilities = { search: true, navigation: true }) {
     searchCount={0}
     searchPending={false}
     tocOpen={false}
-    theme="light"
     doubleClickToClose={false}
     searchInputRef={{ current: null }}
     searchToggleRef={{ current: null }}
@@ -61,8 +58,6 @@ function renderHeader(capabilities = { search: true, navigation: true }) {
     onRefresh={vi.fn()}
     onToggleSearch={onToggleSearch}
     onToggleToc={onToggleToc}
-    onCycleTheme={vi.fn()}
-    onOpenSettings={vi.fn()}
     onOpenFile={vi.fn()}
     onSearchQueryChange={vi.fn()}
     onSearchPrevious={vi.fn()}
@@ -121,12 +116,12 @@ describe('统一文档顶栏', () => {
     expect(host.querySelector('[aria-label="页面导航"]')).toBeNull()
   })
 
-  it('其他桌面平台继续在页码工具栏显示适宽、整页和旋转控件', () => {
+  it('阅读宽度统一承接页面适配，页码工具栏只保留旋转控件', () => {
     renderHeader()
     const header = host.querySelector<HTMLElement>('.reader-topbar')!
     expect(header.classList.contains('is-macos')).toBe(false)
     expect(header.hasAttribute('data-tauri-drag-region')).toBe(false)
-    expect(host.querySelectorAll('.paged-topbar-controls .paged-fit-button')).toHaveLength(2)
+    expect(host.querySelector('.paged-topbar-controls .paged-fit-button')).toBeNull()
     expect(host.querySelector('.paged-topbar-controls .paged-rotate-button')).not.toBeNull()
   })
 
@@ -147,11 +142,9 @@ describe('统一文档顶栏', () => {
     expect(host.querySelector('.reader-tab')?.tagName).toBe('BUTTON')
 
     act(() => host.querySelector<HTMLElement>('.topbar-more-trigger')!.click())
-    for (const [label, handler] of [
-      ['适合宽度', result.controls.onFitWidth],
-      ['整页', result.controls.onFitPage],
-      ['旋转页面', result.controls.onRotate],
-    ] as const) {
+    expect(host.querySelector('.topbar-more-panel button[aria-label="适合宽度"]')).toBeNull()
+    expect(host.querySelector('.topbar-more-panel button[aria-label="整页"]')).toBeNull()
+    for (const [label, handler] of [['旋转页面', result.controls.onRotate]] as const) {
       act(() => host.querySelector<HTMLButtonElement>(`.topbar-more-panel button[aria-label="${label}"]`)!.click())
       expect(handler).toHaveBeenCalledTimes(1)
       act(() => host.querySelector<HTMLElement>('.topbar-more-trigger')!.click())

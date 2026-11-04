@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import {
-  AlertCircle, BookOpen, Check,
+  AlertCircle, BookOpen, Check, ChevronDown, Monitor, Moon, Settings2, Sun,
   X, ZoomIn, ZoomOut,
 } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -489,6 +489,10 @@ export function App() {
   const searchToggleRef = useRef<HTMLButtonElement>(null)
   const pdfViewerRef = useRef<PdfViewerHandle | null>(null)
   const ofdViewerRef = useRef<OFDViewerHandle | null>(null)
+  const ofdFitHeightRef = useRef<(() => void) | null>(null)
+  const registerOfdFitHeight = useCallback((fitHeight: (() => void) | null) => {
+    ofdFitHeightRef.current = fitHeight
+  }, [])
   const mediaTriggerRef = useRef<HTMLElement | null>(null)
   const searchMatchesRef = useRef<DocumentSearchMatch[]>([])
   const searchRequestSequence = useRef(0)
@@ -2347,6 +2351,8 @@ export function App() {
     ? Math.min(tocWindowStart, Math.max(0, tocHeadings.length - TOC_VISIBLE_ROWS))
     : 0
   const tocEnd = tocHeadingIndexes ? Math.min(tocHeadings.length, tocStart + TOC_VISIBLE_ROWS) : tocHeadings.length
+  const themeLabel = t(settings.theme === 'system' ? '跟随系统' : settings.theme === 'light' ? '浅色' : '深色')
+  const ThemeIcon = settings.theme === 'system' ? Monitor : settings.theme === 'light' ? Sun : Moon
 
   return (
     <I18nProvider locale={locale}>
@@ -2366,7 +2372,6 @@ export function App() {
         searchCount={searchCount}
         searchPending={searchPending}
         tocOpen={tocOpen}
-        theme={settings.theme}
         doubleClickToClose={settings.doubleClickToClose}
         searchInputRef={searchInputRef}
         searchToggleRef={searchToggleRef}
@@ -2385,8 +2390,6 @@ export function App() {
           onPageChange: page => pdfViewerRef.current?.goToPage(page),
           onZoomIn: () => pdfViewerRef.current?.zoomIn(),
           onZoomOut: () => pdfViewerRef.current?.zoomOut(),
-          onFitWidth: () => pdfViewerRef.current?.fitWidth(),
-          onFitPage: () => pdfViewerRef.current?.fitPage(),
           onRotate: () => pdfViewerRef.current?.rotate(),
           onResetZoom: () => pdfViewerRef.current?.resetZoom(),
         } : activeTab && ofdReaderDocument ? {
@@ -2399,8 +2402,6 @@ export function App() {
           onPageChange: page => ofdViewerRef.current?.goToPage(page),
           onZoomIn: () => ofdViewerRef.current?.setScale(Math.min(3, (activeTab.reading.ofdScale ?? 1) + 0.1)),
           onZoomOut: () => ofdViewerRef.current?.setScale(Math.max(0.25, (activeTab.reading.ofdScale ?? 1) - 0.1)),
-          onFitWidth: () => ofdViewerRef.current?.setZoomMode('page-width'),
-          onFitPage: () => ofdViewerRef.current?.setZoomMode('page-fit'),
           onRotate: () => ofdViewerRef.current?.setRotation((((activeTab.reading.ofdRotation ?? 0) + 90) % 360) as 0 | 90 | 180 | 270),
           onResetZoom: () => ofdViewerRef.current?.setScale(1),
         } : undefined}
@@ -2413,8 +2414,6 @@ export function App() {
           else patchActiveReading({ searchOpen: true, tocOpen: false })
         }}
         onToggleToc={() => patchActiveReading({ tocOpen: !tocOpen, searchOpen: false })}
-        onCycleTheme={cycleTheme}
-        onOpenSettings={() => { setSettingsSection('appearance'); setSettingsSectionRequest(request => request + 1); setSettingsOpen(true) }}
         onOpenFile={() => void chooseFile()}
         onSearchQueryChange={query => {
           if (activeTabId) setTabSearchPending(activeTabId, Boolean(query.trim()))
@@ -2502,6 +2501,7 @@ export function App() {
           document={pdfReaderDocument}
           locale={locale}
           dark={actualTheme === 'dark'}
+          readingWidth={settings.readingWidth}
           initialPage={activeTab.reading.pdfPage ?? 1}
           initialScale={activeTab.reading.pdfScale ?? 1}
           initialRotation={activeTab.reading.pdfRotation ?? 0}
@@ -2517,6 +2517,7 @@ export function App() {
           document={ofdReaderDocument}
           locale={locale}
           dark={actualTheme === 'dark'}
+          readingWidth={settings.readingWidth}
           systemFontFallback={settings.ofdSystemFontFallback}
           fallbackFont={settings.ofdFallbackFont}
           initialPage={activeTab.reading.ofdPage ?? 1}
@@ -2529,6 +2530,7 @@ export function App() {
           onOutlineChange={onOfdOutlineChange}
           onSearchChange={onOfdSearchChange}
           onSearchPendingChange={setTabSearchPending}
+          onFitHeightReady={registerOfdFitHeight}
         /></Suspense> : activeTab
           ? <ReaderTabLoadState tab={activeTab} onRetry={refresh} />
           : <ReaderWelcomePanel
@@ -2555,7 +2557,26 @@ export function App() {
           <button className="icon-button compact" onClick={() => setZoom(value => Math.min(140, value + 5))} disabled={zoom >= 140} aria-label={t('放大字号')}><ZoomIn size={15} /></button>
         </div>}
         <div className="footer-right">
-          <ReadingWidthPicker value={settings.readingWidth} onChange={readingWidth => updateSettings({ readingWidth })} />
+          <ReadingWidthPicker
+            value={settings.readingWidth}
+            onChange={readingWidth => updateSettings({ readingWidth })}
+            documentType={activeTab?.documentType}
+            onFitWidth={activeTab?.documentType === 'pdf'
+              ? () => pdfViewerRef.current?.fitWidth()
+              : activeTab?.documentType === 'ofd'
+                ? () => ofdViewerRef.current?.setZoomMode('page-width')
+                : undefined}
+            onFitHeight={activeTab?.documentType === 'pdf'
+              ? () => pdfViewerRef.current?.fitHeight()
+              : activeTab?.documentType === 'ofd'
+                ? () => ofdFitHeightRef.current?.()
+                : undefined}
+          />
+          <button className="theme-button" onClick={cycleTheme} title={t('主题：{theme}，点击切换', { theme: themeLabel })} aria-label={t('主题：{theme}，点击切换', { theme: themeLabel })}>
+            <ThemeIcon size={15} />
+            <ChevronDown size={11} />
+          </button>
+          <button className="icon-button" onClick={() => { setSettingsSection('appearance'); setSettingsSectionRequest(request => request + 1); setSettingsOpen(true) }} title={t('设置（⌘, / Ctrl+,）')} aria-label={t('打开设置')}><Settings2 size={16} /></button>
           <span className="footer-product-label">{readerDocument ? t('Markdown 阅读器') : 'MdStudio'}</span>
         </div>
       </footer>
