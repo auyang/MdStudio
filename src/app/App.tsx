@@ -237,6 +237,17 @@ function readZoom(): number {
   }
 }
 
+function safeExternalImageSource(value: string): string | null {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && Boolean(url.hostname) && !url.username && !url.password
+      ? url.href
+      : null
+  } catch {
+    return null
+  }
+}
+
 function displayHtml(
   html: string,
   mermaidCount: number,
@@ -256,6 +267,7 @@ function displayHtml(
     const imageSource = image.getAttribute('src') || ''
     const resourceMatch = imageSource.match(/^mdstudio-image:\/\/asset\/(\d+)$/)
     let hasLocalAsset = false
+    let hasExternalAsset = false
     if (resourceMatch) {
       const asset = imagesByIndex.get(Number(resourceMatch[1]))
       if (asset && imageToken) {
@@ -270,8 +282,17 @@ function displayHtml(
       } else {
         image.removeAttribute('src')
       }
+    } else {
+      const externalSource = safeExternalImageSource(imageSource)
+      if (externalSource) {
+        hasExternalAsset = true
+        image.removeAttribute('src')
+        image.dataset.readerExternalImage = 'true'
+        image.dataset.readerExternalSrc = externalSource
+        image.referrerPolicy = 'no-referrer'
+      }
     }
-    if (!hasLocalAsset && !image.getAttribute('src')) {
+    if (!hasLocalAsset && !hasExternalAsset) {
       const placeholder = parsed.createElement('span')
       placeholder.className = 'reader-missing-image'
       placeholder.dataset.readerI18n = 'image-missing'
@@ -729,6 +750,60 @@ export function App() {
     }
   }, [])
   const loadReaderImage = useCallback(async (image: HTMLImageElement): Promise<string | null> => {
+    const externalSource = safeExternalImageSource(image.dataset.readerExternalSrc || '')
+    if (image.dataset.readerExternalImage === 'true' && externalSource) {
+      if (image.dataset.readerImageLoaded === 'true' && image.src === externalSource) return externalSource
+      const key = `external:${externalSource}`
+      let request = imageRequests.current.get(key)
+      if (!request) {
+        request = (async () => {
+          // 先在脱离 DOM 的 Image 上解码，避免 WebKit 对 hidden 图片等待显示。
+          const decoder = new Image()
+          decoder.decoding = 'async'
+          decoder.loading = 'eager'
+          decoder.referrerPolicy = 'no-referrer'
+          decoder.src = externalSource
+          await decoder.decode()
+          return externalSource
+        })()
+        imageRequests.current.set(key, request)
+        void request.then(
+          () => { if (imageRequests.current.get(key) === request) imageRequests.current.delete(key) },
+          () => { if (imageRequests.current.get(key) === request) imageRequests.current.delete(key) },
+        )
+      }
+      const imageStartedAt = performance.now()
+      try {
+        await request
+        if (!image.isConnected || image.dataset.readerExternalSrc !== externalSource) return null
+        image.loading = 'eager'
+        image.referrerPolicy = 'no-referrer'
+        image.src = externalSource
+        image.dataset.readerImageLoaded = 'true'
+        image.hidden = false
+        const frame = image.closest('.reader-image-frame')
+        const placeholder = frame?.querySelector<HTMLElement>('.reader-image-pending')
+        if (placeholder) {
+          placeholder.hidden = true
+          placeholder.classList.remove('is-error')
+        }
+        frame?.querySelector('[data-reader-image-retry]')?.remove()
+        recordPerformance('reader-external-image-ready', {
+          durationMs: Number((performance.now() - imageStartedAt).toFixed(3)),
+        })
+        return externalSource
+      } catch {
+        if (image.isConnected) {
+          showReaderImageFailure(
+            image,
+            translate(locale, '远程图片加载失败，请检查网络连接或图片地址。'),
+            locale,
+          )
+        }
+        return null
+      }
+    }
+
     const token = image.dataset.readerImageToken
     const index = Number(image.dataset.readerImageIndex)
     if (!token || !Number.isInteger(index) || index < 0 || !isDesktop) return null

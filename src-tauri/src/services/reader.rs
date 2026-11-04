@@ -550,8 +550,11 @@ fn resolve_image(
     image_resources: &Mutex<Vec<ReaderImageResource>>,
 ) -> Option<String> {
     let result = (|| {
-        if value.starts_with("https:") || value.starts_with("http:") {
-            return Err("外部图片已阻止".to_string());
+        if Url::parse(value).is_ok() {
+            if is_safe_https_url(value) {
+                return Ok(value.to_string());
+            }
+            return Err("外部图片仅允许使用安全的 HTTPS 地址".to_string());
         }
         let (relative_path, _) =
             split_reference(value).ok_or_else(|| "图片路径无效".to_string())?;
@@ -1041,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn relative_images_and_links_resolve_without_network_access() {
+    fn relative_images_resolve_locally_and_preserve_safe_https_images() {
         let document = load_document(fixture("relative-images.md").to_str().unwrap()).unwrap();
         assert!(document.html.contains("mdstudio-image://asset/"));
         assert_eq!(document.image_assets.len(), 1);
@@ -1055,7 +1058,7 @@ mod tests {
                 .to_string()
         ));
         assert!(document.html.contains("mdstudio-missing-image") == false);
-        assert!(!document.html.contains("https://example.com/image.png"));
+        assert!(document.html.contains("https://example.com/image.png"));
         assert!(
             document
                 .missing_resources
@@ -1222,7 +1225,7 @@ mod tests {
             .iter()
             .any(|resource| resource.contains("不可信.svg")));
         assert!(!document.html.contains("<script"));
-        assert!(!document.html.contains("tracker.png"));
+        assert!(document.html.contains("https://example.com/tracker.png"));
         assert!(document.html.contains("mdstudio-document://open?path="));
 
         assert_eq!(

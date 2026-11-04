@@ -203,6 +203,7 @@ const translations: Record<string, readonly [string, string]> = {
   '图片无法显示：{alt}': ['Image unavailable: {alt}', '画像を表示できません：{alt}'],
   '本地图片资源': ['local image resource', 'ローカル画像リソース'],
   '图片加载失败：{reason}': ['Image failed to load: {reason}', '画像を読み込めませんでした：{reason}'],
+  '远程图片加载失败，请检查网络连接或图片地址。': ['Remote image could not be loaded. Check the network connection or image URL.', '外部画像を読み込めませんでした。ネットワーク接続または画像 URL を確認してください。'],
   '图片位于视口附近时加载': ['Image loads when near the viewport', '画像は表示範囲の近くで読み込まれます'],
   '放大查看图片：{alt}': ['View image larger: {alt}', '画像を拡大表示：{alt}'],
   '放大查看图片': ['View image larger', '画像を拡大表示'],
