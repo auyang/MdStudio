@@ -58,13 +58,20 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload Windows installers
+      - name: Upload Windows MSI package
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: MdStudio-Windows-${{ github.ref_name }}
-          path: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/nsis/*.exe
+          name: MdStudio-Windows-MSI-${{ github.ref_name }}
+          path: src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows EXE package
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: MdStudio-Windows-EXE-${{ github.ref_name }}
+          path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
           retention-days: 14
