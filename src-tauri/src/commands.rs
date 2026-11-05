@@ -3,7 +3,14 @@ use crate::services::{
     watcher::{FileWatcherService, WatcherStatus},
 };
 use ammonia::Url;
-use std::{collections::VecDeque, path::Path, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    path::Path,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    },
+};
 #[cfg(feature = "perf-benchmark")]
 use std::{fs::OpenOptions, io::Write};
 #[cfg(feature = "perf-benchmark")]
@@ -61,6 +68,153 @@ static NEXT_IMAGE_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 
 #[derive(Default)]
 pub struct PendingOpenFiles(std::sync::Mutex<Vec<String>>);
+
+#[derive(Default)]
+pub struct UnsavedMarkdownState(AtomicUsize);
+
+impl UnsavedMarkdownState {
+    pub fn count(&self) -> usize {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+#[tauri::command]
+pub fn set_unsaved_markdown_count(count: usize, state: State<'_, UnsavedMarkdownState>) {
+    state.0.store(count.min(10_000), Ordering::Relaxed);
+}
+
+#[tauri::command]
+pub fn finish_application_exit(app: AppHandle, state: State<'_, UnsavedMarkdownState>) {
+    state.0.store(0, Ordering::Relaxed);
+    app.exit(0);
+}
+
+#[tauri::command]
+pub async fn open_markdown_edit_document(
+    file_path: String,
+    registry: State<'_, crate::services::editor::MarkdownEditRegistry>,
+) -> Result<crate::services::editor::MarkdownEditDocument, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::editor::open_document(&registry, &file_path)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("编辑文档读取任务失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn save_markdown_edit_document(
+    session_id: String,
+    content: String,
+    bom: bool,
+    line_ending: String,
+    registry: State<'_, crate::services::editor::MarkdownEditRegistry>,
+) -> Result<crate::services::files::SaveResult, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::editor::save_document(&registry, &session_id, &content, bom, &line_ending)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Markdown 保存任务失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn inspect_markdown_save_target(
+    file_path: String,
+) -> Result<crate::services::files::SaveTargetInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::editor::inspect_save_target(&file_path).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("另存为目标检查失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn save_markdown_edit_as(
+    session_id: String,
+    target_path: String,
+    target_hash: Option<String>,
+    content: String,
+    bom: bool,
+    line_ending: String,
+    registry: State<'_, crate::services::editor::MarkdownEditRegistry>,
+) -> Result<crate::services::files::SaveResult, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::editor::save_as(
+            &registry,
+            &session_id,
+            &target_path,
+            target_hash.as_deref(),
+            &content,
+            bom,
+            &line_ending,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("另存为任务失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn check_markdown_edit_version(
+    session_id: String,
+    registry: State<'_, crate::services::editor::MarkdownEditRegistry>,
+) -> Result<crate::services::files::VersionCheck, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::editor::check_version(&registry, &session_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("版本检查任务失败：{error}"))?
+}
+
+#[tauri::command]
+pub fn release_markdown_edit_session(
+    session_id: String,
+    registry: State<'_, crate::services::editor::MarkdownEditRegistry>,
+) -> Result<(), String> {
+    crate::services::editor::release_session(&registry, &session_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn create_markdown_file_at(
+    file_path: String,
+) -> Result<crate::services::files::SaveResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::files::create_markdown_file(&file_path).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Markdown 文件创建任务失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn render_markdown_preview(
+    file_path: String,
+    content: String,
+    registry: State<'_, ReaderImageRegistry>,
+) -> Result<reader::ReaderDocument, String> {
+    let mut document = tauri::async_runtime::spawn_blocking(move || {
+        reader::render_document_from_source(&file_path, &content)
+    })
+    .await
+    .map_err(|error| format!("Markdown 预览任务失败：{error}"))?
+    .map_err(|error| error.to_string())?;
+    document.image_token = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_IMAGE_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    registry.register(
+        document.image_token.clone(),
+        document.image_resources.clone(),
+    )?;
+    Ok(document)
+}
 
 impl PendingOpenFiles {
     pub fn new(paths: Vec<String>) -> Self {
@@ -163,6 +317,34 @@ pub fn normalize_reader_path(file_path: String) -> Result<String, String> {
 #[tauri::command]
 pub fn inspect_document_path(file_path: String) -> Result<documents::DocumentDescriptor, String> {
     documents::inspect_document_path(&file_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn open_workspace(
+    root_path: String,
+    registry: State<'_, crate::services::workspace::WorkspaceRegistry>,
+) -> Result<crate::services::workspace::WorkspaceRoot, String> {
+    crate::services::workspace::open_workspace(&registry, &root_path)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_workspace_directory(
+    directory_path: String,
+    registry: State<'_, crate::services::workspace::WorkspaceRegistry>,
+) -> Result<crate::services::workspace::WorkspaceDirectoryListing, String> {
+    crate::services::workspace::list_directory(&registry, &directory_path)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn create_workspace_markdown_file(
+    directory_path: String,
+    file_name: String,
+    registry: State<'_, crate::services::workspace::WorkspaceRegistry>,
+) -> Result<crate::services::workspace::WorkspaceEntry, String> {
+    crate::services::workspace::create_markdown_file(&registry, &directory_path, &file_name)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -355,6 +537,19 @@ pub fn set_application_locale(locale: String, app: AppHandle) -> Result<(), Stri
     app.set_menu(menu)
         .map(|_| ())
         .map_err(|_| "无法更新应用菜单语言。".to_string())
+}
+
+#[tauri::command]
+pub fn realign_macos_title_bar(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    window
+        .set_title_bar_style(tauri::TitleBarStyle::Overlay)
+        .map_err(|error| format!("无法完成 macOS 标题栏初始布局：{error}"))?;
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+
+    Ok(())
 }
 
 #[tauri::command]

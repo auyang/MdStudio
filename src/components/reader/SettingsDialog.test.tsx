@@ -77,7 +77,7 @@ describe('阅读设置中心', () => {
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="阅读宽度"] button:nth-child(3)')?.click())
     expect(callbacks.onSettingsChange).toHaveBeenCalledWith({ readingWidth: 'wide' })
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.includes('恢复阅读默认值'))?.click())
-    expect(callbacks.onSettingsChange).toHaveBeenLastCalledWith({ theme: 'system', fontSizePx: 16, readingWidth: 'wide' })
+    expect(callbacks.onSettingsChange).toHaveBeenLastCalledWith({ theme: 'system', fontSizePx: 16, editorFontSizePx: 14, readingWidth: 'wide' })
   })
 
   it('提供 OFD 系统字体替代开关和主题样式的默认字体选项', async () => {

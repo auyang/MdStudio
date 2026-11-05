@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import {
   AlertCircle, BookOpen, Check, ChevronDown, Monitor, Moon, Settings2, Sun,
@@ -19,6 +20,13 @@ import type { MediaViewerContent } from '../components/reader/MediaViewer'
 import { PdfViewer } from '../components/reader/PdfViewer'
 import type { PdfViewerHandle } from '../components/reader/PdfViewer'
 import { ReaderTabLoadState, ReaderWelcomePanel } from '../components/reader/ReaderEntryState'
+import { FileTree } from '../components/sidebar/FileTree'
+import { HomePage, RecentFilesPage, WorkspaceLanding } from '../components/home/HomePage'
+import { SidebarNavigation } from '../components/home/SidebarNavigation'
+import type { SidebarSection } from '../components/home/SidebarNavigation'
+import { ExternalChangeBanner } from '../components/editor/ExternalChangeBanner'
+import { UnsavedChangesDialog } from '../components/editor/UnsavedChangesDialog'
+import type { UnsavedActionKind } from '../components/editor/UnsavedChangesDialog'
 import { DocumentNavigationPanel } from '../components/reader/DocumentNavigationPanel'
 import { renderReaderMath } from '../components/reader/mathRendering'
 import { SettingsDialog } from '../components/reader/SettingsDialog'
@@ -35,6 +43,9 @@ import type { OutlineNode } from '@ofdrw/ofdrw-viewer-ui'
 import { capabilitiesForType } from '../features/documents/core/types'
 import type { DocumentDescriptor } from '../features/documents/core/types'
 import type { DocumentWorkspace } from '../features/documents/core/workspace'
+import { DEFAULT_WORKSPACE_UI_PREFERENCES, loadLastWorkspacePath, loadWorkspaceUiPreferences, saveLastWorkspacePath, saveWorkspaceUiPreferences } from '../features/workspace/preferences'
+import type { WorkspaceEntry, WorkspaceRoot } from '../features/workspace/types'
+import { dismissOpenDetailsOutside } from '../features/ui/dismissOpenDetailsOutside'
 import type { AppLocale } from '../features/reader/preferences'
 import { nextHtmlBlockEnd } from '../features/reader/htmlChunker'
 import {
@@ -85,6 +96,11 @@ import {
 } from '../features/reader/navigation'
 import type { NavigationHistory, ReadingLocation } from '../features/reader/navigation'
 import { performanceEnabled, performancePageStart, recordPerformance } from '../features/reader/performance'
+import { acceptRemoteVersion, createSession, markExternalChange, markSessionSaved, updateSessionContent } from '../features/documents/session'
+import type { DocumentSession as MarkdownEditSession, LineEnding } from '../features/documents/session'
+import type { CodeMirrorCommands, CodeMirrorViewState } from '../components/editor/CodeMirrorEditor'
+
+const CodeMirrorEditor = lazy(() => import('../components/editor/CodeMirrorEditor').then(module => ({ default: module.CodeMirrorEditor })))
 
 type Heading = { id: string; text: string; level: number }
 type MermaidDiagramData = { index: number; language: string; source: string }
@@ -113,11 +129,21 @@ type MarkdownReaderDocument = {
   performance?: ReaderPerformanceTimings
 }
 type ReaderDocument = MarkdownReaderDocument | PdfReaderDocument | OfdReaderDocument
-type FileChangeEvent = { paths: string[]; operation: string }
+type FileChangeEvent = { paths: string[]; operation: string; hashes?: Record<string, string | null> }
 type ReaderTabState = ReaderTab<ReaderDocument>
 type ReaderWorkspace = DocumentWorkspace<ReaderDocument>
 type DeferredOpen = { paths: string[]; source: string; anchor?: string }
 type HeadingElements = HTMLElement[] | null
+type MarkdownEditorState = {
+  sessionId: string
+  session: MarkdownEditSession
+  viewState?: CodeMirrorViewState
+  canUndo: boolean
+  canRedo: boolean
+  conflictDismissed: boolean
+}
+type UnsavedGuard = { kind: UnsavedActionKind; ids: string[]; workspacePath?: string }
+type AppPage = 'reader' | 'home' | 'recent' | 'workspace'
 
 let nextPerformanceDocumentId = 0
 
@@ -194,6 +220,16 @@ function getLocalStorage(): StorageLike | null {
 
 function loadInitialPersistence() {
   return loadReaderPersistence(getLocalStorage() ?? unavailableStorage)
+}
+
+function loadInitialWorkspaceUiPreferences() {
+  try { return loadWorkspaceUiPreferences(window.localStorage) }
+  catch { return { ...DEFAULT_WORKSPACE_UI_PREFERENCES } }
+}
+
+function loadInitialWorkspacePath() {
+  try { return loadLastWorkspacePath(window.localStorage) }
+  catch { return null }
 }
 
 function maxScrollTop(): number {
@@ -456,10 +492,19 @@ export function App() {
   const isDesktop = useMemo(() => isTauri(), [])
   const [initialPersistence] = useState(loadInitialPersistence)
   const [tabState, setTabState] = useState<ReaderWorkspace>(() => emptyReaderTabs<ReaderDocument>())
+  const [markdownEditors, setMarkdownEditors] = useState<Record<string, MarkdownEditorState>>({})
+  const [markdownPreviews, setMarkdownPreviews] = useState<Record<string, MarkdownReaderDocument>>({})
+  const [unsavedGuard, setUnsavedGuard] = useState<UnsavedGuard | null>(null)
+  const [unsavedGuardError, setUnsavedGuardError] = useState('')
   const [navigation, setNavigation] = useState<NavigationHistory>(emptyNavigationHistory)
   const [navigationBusy, setNavigationBusy] = useState(false)
   const [mermaidHosts, setMermaidHosts] = useState<Array<{ element: HTMLElement; index: number }>>([])
   const [settings, setSettings] = useState<ReaderSettingsV1>(initialPersistence.settings)
+  const [workspace, setWorkspace] = useState<WorkspaceRoot | null>(null)
+  const [workspaceUi, setWorkspaceUi] = useState(loadInitialWorkspaceUiPreferences)
+  const [lastWorkspacePath] = useState(loadInitialWorkspacePath)
+  const [appPage, setAppPage] = useState<AppPage>('home')
+  const [sidebarSection, setSidebarSection] = useState<Exclude<SidebarSection, 'settings'>>('home')
   const [recents, setRecents] = useState<RecentFileV1[]>(initialPersistence.recents)
   const [sessionReady, setSessionReady] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -478,7 +523,16 @@ export function App() {
   const [fallbackSearch, setFallbackSearch] = useState<{ matches: DocumentSearchMatch[]; index: number } | null>(null)
   const [contentMountedFor, setContentMountedFor] = useState<object | null>(null)
   const [tocWindowStart, setTocWindowStart] = useState(0)
+  const sidebarWidth = workspaceUi.sidebarCollapsed ? 56 : workspaceUi.sidebarWidth
   const tabStateRef = useRef(tabState)
+  const markdownEditorsRef = useRef(markdownEditors)
+  const markdownPreviewsRef = useRef(markdownPreviews)
+  const editorCommandsRef = useRef<Record<string, CodeMirrorCommands>>({})
+  const savingMarkdownIdsRef = useRef(new Set<string>())
+  const allowWindowCloseRef = useRef(false)
+  const externalCheckSequenceRef = useRef(new Map<string, number>())
+  const editorOpenRequestsRef = useRef(new Map<string, Promise<void>>())
+  const guardRequestRef = useRef<(action: UnsavedGuard) => void>(() => undefined)
   const navigationRef = useRef(navigation)
   const settingsRef = useRef(settings)
   const recentsRef = useRef(recents)
@@ -494,6 +548,8 @@ export function App() {
   const pdfPositionSaveTimer = useRef<number | undefined>(undefined)
   const ofdPositionSaveTimer = useRef<number | undefined>(undefined)
   const sessionSaveTimer = useRef<number | undefined>(undefined)
+  const workspaceOpenSequenceRef = useRef(0)
+  const workspaceRestoreStartedRef = useRef(false)
   const imageRequests = useRef(new Map<string, Promise<string>>())
   const performanceDocumentMarks = useRef(new WeakMap<ReaderDocument, { id: number; requestStartedAt: number; ipcCompletedAt: number }>())
   const loadSequence = useRef(new Map<string, number>())
@@ -538,7 +594,11 @@ export function App() {
     })
   }, [])
   const activeDocument = activeTab?.document ?? null
-  const readerDocument = activeDocument?.documentType === 'markdown' ? activeDocument : null
+  const activeMarkdownEditor = activeTabId ? markdownEditors[activeTabId] : undefined
+  const activeMarkdownPreview = activeTabId ? markdownPreviews[activeTabId] : undefined
+  const readerDocument = activeDocument?.documentType === 'markdown' && activeMarkdownEditor?.session.activeMode !== 'source'
+    ? activeMarkdownPreview ?? activeDocument
+    : null
   const pdfReaderDocument = activeDocument?.documentType === 'pdf' ? activeDocument : null
   const ofdReaderDocument = activeDocument?.documentType === 'ofd' ? activeDocument : null
   const contentMountKey = useMemo(() => ({}), [activeTabId, readerDocument])
@@ -565,6 +625,20 @@ export function App() {
   useEffect(() => {
     document.documentElement.lang = locale
   }, [locale])
+
+  useEffect(() => {
+    if (!isDesktop) return
+    let secondFrame = 0
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        void invoke('realign_macos_title_bar').catch(() => undefined)
+      })
+    })
+    return () => {
+      cancelAnimationFrame(firstFrame)
+      if (secondFrame) cancelAnimationFrame(secondFrame)
+    }
+  }, [isDesktop])
 
   useEffect(() => {
     if (!isDesktop) return
@@ -596,6 +670,36 @@ export function App() {
     tabStateRef.current = next
     setTabState(next)
   }, [])
+
+  const commitMarkdownEditors = useCallback((next: Record<string, MarkdownEditorState>) => {
+    markdownEditorsRef.current = next
+    setMarkdownEditors(next)
+  }, [])
+
+  const patchMarkdownEditor = useCallback((id: string, update: (current: MarkdownEditorState) => MarkdownEditorState) => {
+    const current = markdownEditorsRef.current[id]
+    if (!current) return
+    commitMarkdownEditors({ ...markdownEditorsRef.current, [id]: update(current) })
+  }, [commitMarkdownEditors])
+
+  const commitMarkdownPreviews = useCallback((next: Record<string, MarkdownReaderDocument>) => {
+    markdownPreviewsRef.current = next
+    setMarkdownPreviews(next)
+  }, [])
+
+  const releaseMarkdownPreview = useCallback((id: string) => {
+    const preview = markdownPreviewsRef.current[id]
+    if (preview?.imageToken) void invoke('release_reader_image_document', { imageToken: preview.imageToken }).catch(() => undefined)
+    if (!(id in markdownPreviewsRef.current)) return
+    const next = { ...markdownPreviewsRef.current }
+    delete next[id]
+    commitMarkdownPreviews(next)
+  }, [commitMarkdownPreviews])
+
+  useEffect(() => {
+    const dirtyCount = Object.values(markdownEditors).filter(item => item.session.isDirty).length
+    if (isDesktop) void invoke('set_unsaved_markdown_count', { count: dirtyCount }).catch(() => undefined)
+  }, [isDesktop, markdownEditors])
 
   const commitNavigation = useCallback((next: NavigationHistory) => {
     navigationRef.current = next
@@ -887,6 +991,12 @@ export function App() {
   }, [contentReady, html, locale])
 
   useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => dismissOpenDetailsOutside(event.target)
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [])
+
+  useEffect(() => {
     const media = window.matchMedia?.('(prefers-color-scheme: dark)')
     if (!media) return
     const update = (event: MediaQueryListEvent) => setSystemDark(event.matches)
@@ -900,6 +1010,11 @@ export function App() {
     const readerWidth = settings.readingWidth === 'fit' ? '100%' : `${READING_WIDTH_PX[settings.readingWidth]}px`
     window.document.documentElement.style.setProperty('--reader-width', readerWidth)
   }, [actualTheme, settings.fontSizePx, settings.readingWidth])
+
+  useEffect(() => {
+    try { saveWorkspaceUiPreferences(window.localStorage, workspaceUi) }
+    catch { /* 工作区宽度仍可在当前运行中调整。 */ }
+  }, [workspaceUi])
 
   useEffect(() => {
     window.document.documentElement.style.setProperty('--reader-zoom', String(zoom / 100))
@@ -1224,14 +1339,251 @@ export function App() {
     const activeId = preferredId && state.tabs.find(item => item.id === preferredId)?.document ? preferredId : finalId
     if (activeId) {
       commitTabState(activateReaderTab(tabStateRef.current, activeId))
+      setAppPage('reader')
+      if (source === 'workspace' || source === 'recent') setSidebarSection(source)
     }
     return Boolean(activeId)
   }, [commitTabState, isDesktop, loadReaderTab, locale, saveActivePosition, updateRecentFiles])
+
+  const beginMarkdownEditing = useCallback(async (id: string) => {
+    const tab = tabStateRef.current.tabs.find(item => item.id === id)
+    if (!tab || tab.documentType !== 'markdown' || !tab.document || tab.status !== 'ready') return false
+    const existing = markdownEditorsRef.current[id]
+    if (existing) {
+      patchMarkdownEditor(id, current => ({ ...current, session: { ...current.session, activeMode: 'source' }, conflictDismissed: false }))
+      return true
+    }
+    const pending = editorOpenRequestsRef.current.get(id)
+    if (pending) {
+      await pending
+      return Boolean(markdownEditorsRef.current[id])
+    }
+    const request = (async () => {
+      const opened = await invoke<{ sessionId: string; snapshot: { filePath: string; content: string; diskVersionHash: string; bom: boolean; lineEnding: LineEnding } }>(
+        'open_markdown_edit_document', { filePath: tab.canonicalPath },
+      )
+      if (!tabStateRef.current.tabs.some(item => item.id === id)) {
+        void invoke('release_markdown_edit_session', { sessionId: opened.sessionId }).catch(() => undefined)
+        return
+      }
+      const session = createSession(opened.snapshot)
+      session.activeMode = 'source'
+      commitMarkdownEditors({
+        ...markdownEditorsRef.current,
+        [id]: { sessionId: opened.sessionId, session, canUndo: false, canRedo: false, conflictDismissed: false },
+      })
+    })()
+    editorOpenRequestsRef.current.set(id, request)
+    try {
+      await request
+      return Boolean(markdownEditorsRef.current[id])
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return false
+    } finally {
+      if (editorOpenRequestsRef.current.get(id) === request) editorOpenRequestsRef.current.delete(id)
+    }
+  }, [commitMarkdownEditors, patchMarkdownEditor])
+
+  const saveMarkdownTab = useCallback(async (id: string) => {
+    const before = markdownEditorsRef.current[id]
+    if (!before?.session.isDirty) return true
+    if (before.session.diskConflict) {
+      setError(t('文件已在外部修改，请先重新加载或另存为。'))
+      return false
+    }
+    if (savingMarkdownIdsRef.current.has(id)) return false
+    savingMarkdownIdsRef.current.add(id)
+    const snapshotContent = before.session.currentContent
+    const snapshotRevision = before.session.revision
+    try {
+      const result = await invoke<{ filePath: string; diskVersionHash: string; byteSize: number }>(
+        'save_markdown_edit_document', {
+          sessionId: before.sessionId,
+          content: snapshotContent,
+          bom: before.session.bom,
+          lineEnding: before.session.lineEnding,
+        },
+      )
+      const current = markdownEditorsRef.current[id]
+      if (!current || current.sessionId !== before.sessionId) return false
+      const savedSession = markSessionSaved(current.session, result.filePath, result.diskVersionHash, snapshotContent, snapshotRevision)
+      patchMarkdownEditor(id, value => ({ ...value, session: savedSession, conflictDismissed: false }))
+      releaseMarkdownPreview(id)
+      if (result.filePath !== current.session.filePath) {
+        const nextId = rekeyMarkdownTab(id, result.filePath)
+        if (!nextId) return false
+        await loadReaderTab(nextId, result.filePath)
+        updateRecentFiles([result.filePath])
+      } else {
+        await loadReaderTab(id, result.filePath)
+      }
+      return !markdownEditorsRef.current[result.filePath]?.session.isDirty
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return false
+    } finally {
+      savingMarkdownIdsRef.current.delete(id)
+    }
+  }, [loadReaderTab, patchMarkdownEditor, releaseMarkdownPreview, t, updateRecentFiles])
+
+  const saveMarkdownAs = useCallback(async (id: string) => {
+    const editor = markdownEditorsRef.current[id]
+    if (!editor) return false
+    const selected = await save({
+      defaultPath: editor.session.filePath ? pathFileName(editor.session.filePath) : 'Untitled.md',
+      filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+    })
+    if (typeof selected !== 'string') return false
+    const savePath = /\.(md|markdown)$/i.test(selected) ? selected : `${selected}.md`
+    const target = await invoke<{ canonicalPath: string; diskVersionHash: string | null }>(
+      'inspect_markdown_save_target', { filePath: savePath },
+    )
+    const currentTab = tabStateRef.current.tabs.find(item => item.id === id)
+    if (!currentTab) return false
+    const existingTab = tabStateRef.current.tabs.find(item => item.canonicalPath === target.canonicalPath && item.id !== id)
+    if (existingTab) {
+      setError(t('另存为目标已在另一个标签中打开，请先关闭该标签。'))
+      return false
+    }
+    if (target.diskVersionHash) {
+      const confirmed = window.confirm(t('目标文件已存在，保存将替换该文件。是否继续？'))
+      if (!confirmed) return false
+    }
+    const snapshotContent = editor.session.currentContent
+    const snapshotRevision = editor.session.revision
+    const result = await invoke<{ filePath: string; diskVersionHash: string; byteSize: number }>(
+      'save_markdown_edit_as', {
+        sessionId: editor.sessionId,
+        targetPath: target.canonicalPath,
+        targetHash: target.diskVersionHash,
+        content: snapshotContent,
+        bom: editor.session.bom,
+        lineEnding: editor.session.lineEnding,
+      },
+    )
+    const current = markdownEditorsRef.current[id]
+    if (!current || current.sessionId !== editor.sessionId) return false
+    patchMarkdownEditor(id, value => ({
+      ...value,
+      session: markSessionSaved(value.session, result.filePath, result.diskVersionHash, snapshotContent, snapshotRevision),
+      conflictDismissed: false,
+    }))
+    releaseMarkdownPreview(id)
+    if (result.filePath !== current.session.filePath) {
+      const nextId = rekeyMarkdownTab(id, result.filePath)
+      if (!nextId) return false
+      await loadReaderTab(nextId, result.filePath)
+    } else {
+      await loadReaderTab(id, result.filePath)
+    }
+    updateRecentFiles([result.filePath])
+    return true
+  }, [loadReaderTab, patchMarkdownEditor, releaseMarkdownPreview, t, updateRecentFiles])
+
+  const setMarkdownMode = useCallback(async (id: string, mode: 'read' | 'edit') => {
+    if (mode === 'edit') {
+      await beginMarkdownEditing(id)
+      return
+    }
+    const editor = markdownEditorsRef.current[id]
+    if (!editor) return
+    if (!editor.session.isDirty) {
+      releaseMarkdownPreview(id)
+      patchMarkdownEditor(id, current => ({ ...current, session: { ...current.session, activeMode: 'visual' } }))
+      return
+    }
+    try {
+      const tab = tabStateRef.current.tabs.find(item => item.id === id)
+      if (!tab) return
+      const revision = editor.session.revision
+      const preview = await invoke<MarkdownReaderDocument>('render_markdown_preview', {
+        filePath: editor.session.filePath ?? tab.canonicalPath,
+        content: editor.session.currentContent,
+      })
+      const current = markdownEditorsRef.current[id]
+      if (!current || current.sessionId !== editor.sessionId || current.session.revision !== revision) {
+        if (preview.imageToken) void invoke('release_reader_image_document', { imageToken: preview.imageToken }).catch(() => undefined)
+        return
+      }
+      const previous = markdownPreviewsRef.current[id]
+      if (previous?.imageToken) void invoke('release_reader_image_document', { imageToken: previous.imageToken }).catch(() => undefined)
+      commitMarkdownPreviews({ ...markdownPreviewsRef.current, [id]: preview })
+      patchMarkdownEditor(id, value => ({ ...value, session: { ...value.session, activeMode: 'visual' } }))
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [beginMarkdownEditing, commitMarkdownPreviews, patchMarkdownEditor, releaseMarkdownPreview])
+
+  const createNewMarkdown = useCallback(async () => {
+    const selected = await save({
+      defaultPath: 'Untitled.md',
+      filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+    })
+    if (typeof selected !== 'string') return
+    const filePath = /\.(md|markdown)$/i.test(selected) ? selected : `${selected}.md`
+    try {
+      const result = await invoke<{ filePath: string }>('create_markdown_file_at', { filePath })
+      const opened = await openDocuments([result.filePath], 'new-markdown')
+      const tab = tabStateRef.current.tabs.find(item => item.canonicalPath === result.filePath)
+        ?? tabStateRef.current.tabs.find(item => item.id === tabStateRef.current.activeTabId)
+      if (opened && tab?.documentType === 'markdown') await beginMarkdownEditing(tab.id)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [beginMarkdownEditing, openDocuments])
+
+  function rekeyMarkdownTab(id: string, canonicalPath: string): string | null {
+    const state = tabStateRef.current
+    const source = state.tabs.find(tab => tab.id === id)
+    if (!source) return null
+    const duplicate = state.tabs.find(tab => tab.id !== id && tab.canonicalPath === canonicalPath)
+    if (duplicate) {
+      setError(t('另存为目标已在另一个标签中打开，请先关闭该标签。'))
+      return null
+    }
+    const nextId = canonicalPath
+    if (nextId === id) return id
+    loadSequence.current.set(id, (loadSequence.current.get(id) ?? 0) + 1)
+    loadControllers.current.get(id)?.abort()
+    const nextState: ReaderWorkspace = {
+      ...state,
+      tabs: state.tabs.map(tab => tab.id === id ? {
+        ...tab,
+        id: nextId,
+        canonicalPath,
+        displayName: pathFileName(canonicalPath),
+        status: 'loading',
+        stale: false,
+        error: undefined,
+        document: null,
+        session: null,
+      } : tab),
+      activeTabId: state.activeTabId === id ? nextId : state.activeTabId,
+      recentActivationOrder: state.recentActivationOrder.map(value => value === id ? nextId : value),
+    }
+    commitTabState(nextState)
+    const editor = markdownEditorsRef.current[id]
+    if (editor) {
+      const next = { ...markdownEditorsRef.current, [nextId]: editor }
+      delete next[id]
+      commitMarkdownEditors(next)
+    }
+    const commands = editorCommandsRef.current[id]
+    if (commands) {
+      editorCommandsRef.current[nextId] = commands
+      delete editorCommandsRef.current[id]
+    }
+    releaseMarkdownPreview(id)
+    return nextId
+  }
 
   const activateTab = useCallback((id: string) => {
     const current = tabStateRef.current.tabs.find(tab => tab.id === tabStateRef.current.activeTabId)
     const target = tabStateRef.current.tabs.find(tab => tab.id === id)
     if (!target) return
+    setAppPage('reader')
     const activationStartedAt = performance.now()
     openBatchSequence.current += 1
     if (current?.id !== id) saveActivePosition()
@@ -1399,7 +1751,7 @@ export function App() {
     }
   }, [captureNavigationLocation, commitNavigation, navigationBusy, restoreNavigationLocation])
 
-  const closeTab = useCallback((id: string) => {
+  const closeTabImmediately = useCallback((id: string) => {
     const before = tabStateRef.current
     const closing = before.tabs.find(tab => tab.id === id)
     if (!closing) return
@@ -1427,12 +1779,189 @@ export function App() {
         .then(() => closing.session?.close())
         .catch(() => undefined)
     }
+    const editor = markdownEditorsRef.current[id]
+    if (editor?.sessionId) void invoke('release_markdown_edit_session', { sessionId: editor.sessionId }).catch(() => undefined)
+    const nextEditors = { ...markdownEditorsRef.current }
+    delete nextEditors[id]
+    commitMarkdownEditors(nextEditors)
+    delete editorCommandsRef.current[id]
+    releaseMarkdownPreview(id)
     if (before.activeTabId === id) setMediaContent(null)
     if (tabStateRef.current.tabs.length === 0) {
       setError('')
       setMermaidHosts([])
     }
-  }, [commitTabState, saveActivePosition])
+  }, [commitMarkdownEditors, commitTabState, releaseMarkdownPreview, saveActivePosition])
+
+  const closeTab = useCallback((id: string) => {
+    const editor = markdownEditorsRef.current[id]
+    if (editor?.session.isDirty) {
+      setUnsavedGuard({ kind: 'close-tab', ids: [id] })
+      setUnsavedGuardError('')
+      return
+    }
+    closeTabImmediately(id)
+  }, [closeTabImmediately])
+
+  const dirtyEditorIds = () => Object.entries(markdownEditorsRef.current)
+    .filter(([, editor]) => editor.session.isDirty)
+    .map(([id]) => id)
+
+  const requestGuardedAction = (action: UnsavedGuard) => {
+    const ids = action.ids.filter(id => markdownEditorsRef.current[id]?.session.isDirty)
+    if (!ids.length) {
+      if (action.kind === 'close-tab') closeTabImmediately(action.ids[0])
+      else if (action.kind === 'switch-workspace' && action.workspacePath) void applyWorkspace(action.workspacePath)
+      else if (action.kind === 'quit-window') void closeWindowNow()
+      else if (action.kind === 'quit-app') void quitApplicationNow()
+      return
+    }
+    setUnsavedGuard({ ...action, ids })
+    setUnsavedGuardError('')
+  }
+  guardRequestRef.current = requestGuardedAction
+
+  useEffect(() => {
+    if (!isDesktop) return
+    let disposed = false
+    let stopQuit: (() => void) | undefined
+    let stopClose: (() => void) | undefined
+    void (async () => {
+      try {
+        stopQuit = await listen('mdstudio:quit-requested', () => {
+          const ids = dirtyEditorIds()
+          guardRequestRef.current({ kind: 'quit-app', ids })
+        })
+        if (disposed) { stopQuit(); return }
+        stopClose = await getCurrentWindow().onCloseRequested(event => {
+          if (allowWindowCloseRef.current) {
+            allowWindowCloseRef.current = false
+            return
+          }
+          const ids = dirtyEditorIds()
+          if (!ids.length) return
+          event.preventDefault()
+          guardRequestRef.current({ kind: 'quit-window', ids })
+        })
+        if (disposed) stopClose()
+      } catch {
+        // 窗口级关闭保护由 Rust ExitRequested 事件继续兜底。
+      }
+    })()
+    return () => {
+      disposed = true
+      stopQuit?.()
+      stopClose?.()
+    }
+  }, [isDesktop])
+
+  const closeWindowNow = async () => {
+    allowWindowCloseRef.current = true
+    await invoke('set_unsaved_markdown_count', { count: 0 }).catch(() => undefined)
+    await getCurrentWindow().close()
+  }
+
+  const quitApplicationNow = async () => {
+    await invoke('finish_application_exit')
+  }
+
+  const applyWorkspace = async (rootPath: string) => {
+    const requestSequence = ++workspaceOpenSequenceRef.current
+    try {
+      const opened = await invoke<WorkspaceRoot>('open_workspace', { rootPath })
+      if (requestSequence !== workspaceOpenSequenceRef.current) return
+      try { saveLastWorkspacePath(window.localStorage, opened.path) } catch { /* 工作区仍可在当前运行中使用。 */ }
+      setWorkspace(opened)
+      setWorkspaceUi(value => ({ ...value, sidebarCollapsed: false }))
+      setSidebarSection('workspace')
+      setAppPage('workspace')
+      setError('')
+    } catch {
+      if (requestSequence === workspaceOpenSequenceRef.current) {
+        setError(t('无法打开所选工作区；请检查目录权限后重试。'))
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (!isDesktop || !lastWorkspacePath || workspace || workspaceRestoreStartedRef.current) return
+    workspaceRestoreStartedRef.current = true
+    const requestSequence = ++workspaceOpenSequenceRef.current
+    void invoke<WorkspaceRoot>('open_workspace', { rootPath: lastWorkspacePath }).then(opened => {
+      if (requestSequence !== workspaceOpenSequenceRef.current) return
+      try { saveLastWorkspacePath(window.localStorage, opened.path) } catch { /* 保留当前恢复结果。 */ }
+      setWorkspace(opened)
+      setWorkspaceUi(value => ({ ...value, sidebarCollapsed: false }))
+      setSidebarSection('workspace')
+      setAppPage(current => {
+        if (current === 'reader' || tabStateRef.current.tabs.length > 0) return 'reader'
+        return current === 'home' || current === 'workspace' ? 'workspace' : current
+      })
+    }).catch(() => {
+      if (requestSequence === workspaceOpenSequenceRef.current) {
+        setError(t('无法恢复上次工作区；请检查目录连接或权限后重试。'))
+      }
+    })
+  }, [isDesktop, lastWorkspacePath, t, workspace])
+
+  const discardForWorkspaceSwitch = async (ids: string[]) => {
+    for (const id of ids) {
+      const editor = markdownEditorsRef.current[id]
+      if (!editor?.session.isDirty) continue
+      const change = editor.session.externalChange
+      if (change && change.operation !== 'removed' && change.operation !== 'renamed') {
+        try {
+          const opened = await invoke<{ sessionId: string; snapshot: { filePath: string; content: string; diskVersionHash: string; bom: boolean; lineEnding: LineEnding } }>(
+            'open_markdown_edit_document', { filePath: editor.session.filePath },
+          )
+          const prior = markdownEditorsRef.current[id]
+          if (prior) {
+            patchMarkdownEditor(id, current => ({ ...current, sessionId: opened.sessionId, session: acceptRemoteVersion(current.session, opened.snapshot), conflictDismissed: false }))
+            void invoke('release_markdown_edit_session', { sessionId: prior.sessionId }).catch(() => undefined)
+          } else void invoke('release_markdown_edit_session', { sessionId: opened.sessionId }).catch(() => undefined)
+        } catch {
+          patchMarkdownEditor(id, current => ({ ...current, session: { ...current.session, currentContent: current.session.originalContent, isDirty: false }, conflictDismissed: false }))
+        }
+      } else {
+        patchMarkdownEditor(id, current => ({
+          ...current,
+          session: { ...current.session, currentContent: current.session.originalContent, isDirty: false },
+          conflictDismissed: false,
+        }))
+      }
+      releaseMarkdownPreview(id)
+    }
+  }
+
+  const finishUnsavedGuard = async (decision: 'save' | 'discard') => {
+    const action = unsavedGuard
+    if (!action) return
+    setUnsavedGuardError('')
+    if (decision === 'save') {
+      for (const id of action.ids) {
+        const editor = markdownEditorsRef.current[id]
+        if (!editor?.session.isDirty) continue
+        let saved = false
+        try {
+          saved = editor.session.diskConflict ? await saveMarkdownAs(id) : await saveMarkdownTab(id)
+        } catch (reason) {
+          setUnsavedGuardError(reason instanceof Error ? reason.message : String(reason))
+          return
+        }
+        if (!saved || markdownEditorsRef.current[id]?.session.isDirty) {
+          setUnsavedGuardError('保存未完成；未保存内容仍保留在编辑器中。')
+          return
+        }
+      }
+    } else if (action.kind === 'switch-workspace') {
+      await discardForWorkspaceSwitch(action.ids)
+    }
+    setUnsavedGuard(null)
+    if (action.kind === 'close-tab') closeTabImmediately(action.ids[0])
+    else if (action.kind === 'switch-workspace' && action.workspacePath) await applyWorkspace(action.workspacePath)
+    else if (action.kind === 'quit-window') await closeWindowNow()
+    else if (action.kind === 'quit-app') await quitApplicationNow()
+  }
 
   const chooseFile = useCallback(async () => {
     if (!isDesktop) {
@@ -1451,6 +1980,37 @@ export function App() {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
   }, [isDesktop, openDocuments])
+
+  const chooseWorkspace = useCallback(async () => {
+    if (!isDesktop) {
+      setError('文件夹工作区仅在 MdStudio 桌面应用中可用。')
+      return
+    }
+    try {
+      const selected = await open({ directory: true, multiple: false })
+      const selectedPath = typeof selected === 'string' ? selected : Array.isArray(selected) ? selected[0] : undefined
+      if (!selectedPath) return
+      const dirtyIds = dirtyEditorIds()
+      if (dirtyIds.length) requestGuardedAction({ kind: 'switch-workspace', ids: dirtyIds, workspacePath: selectedPath })
+      else await applyWorkspace(selectedPath)
+    } catch {
+      setError(t('无法打开所选工作区；请检查目录权限后重试。'))
+    }
+  }, [isDesktop, t])
+
+  const setWorkspaceWidth = useCallback((width: number) => {
+    setWorkspaceUi(value => ({
+      ...value,
+      sidebarWidth: Math.min(340, Math.max(190, Math.round(width))),
+    }))
+  }, [])
+
+  const createWorkspaceMarkdown = useCallback(async (directoryPath: string, fileName: string) => {
+    const entry = await invoke<WorkspaceEntry>('create_workspace_markdown_file', { directoryPath, fileName })
+    const opened = await openDocuments([entry.path], 'workspace')
+    const tab = tabStateRef.current.tabs.find(item => item.canonicalPath === entry.path)
+    if (opened && tab?.documentType === 'markdown') await beginMarkdownEditing(tab.id)
+  }, [beginMarkdownEditing, openDocuments])
 
   useEffect(() => {
     if (!isDesktop) {
@@ -1477,15 +2037,118 @@ export function App() {
         stopChanges = await listen<FileChangeEvent>('mdstudio:file-change', event => {
           const paths = new Set(event.payload.paths)
           const changed = tabStateRef.current.tabs.filter(tab => paths.has(tab.canonicalPath))
-          for (const tab of changed) {
-            if (event.payload.operation === 'removed' || event.payload.operation === 'renamed') {
-              patchTab(tab.id, current => ({
+          const markMissing = (tab: ReaderTabState, editor: MarkdownEditorState | undefined) => {
+            if (!tabStateRef.current.tabs.some(current => current.id === tab.id)) return
+            if (editor) {
+              patchMarkdownEditor(tab.id, current => ({
                 ...current,
-                status: 'missing',
-                stale: true,
-                error: '源文件已删除、移动或重命名；当前保留最后一次成功读取的内容。',
+                session: markExternalChange(current.session, { operation: 'removed', content: null, hash: null }),
+                conflictDismissed: false,
               }))
-            } else if (tab.id === tabStateRef.current.activeTabId) {
+            }
+            patchTab(tab.id, current => ({
+              ...current,
+              status: 'missing',
+              stale: true,
+              error: editor ? undefined : (current.error ?? '源文件已删除、移动或重命名；当前保留最后一次成功读取的内容。'),
+            }))
+          }
+          const checkMarkdownModification = (tab: ReaderTabState, editor: MarkdownEditorState) => {
+            const eventHash = event.payload.hashes?.[tab.canonicalPath]
+            if (eventHash && eventHash === editor.session.diskVersionHash) return
+            if (savingMarkdownIdsRef.current.has(tab.id)) return
+            const sequence = (externalCheckSequenceRef.current.get(tab.id) ?? 0) + 1
+            externalCheckSequenceRef.current.set(tab.id, sequence)
+            void invoke<{ changed: boolean; diskVersionHash: string }>('check_markdown_edit_version', { sessionId: editor.sessionId })
+              .then(async check => {
+                if (externalCheckSequenceRef.current.get(tab.id) !== sequence) return
+                const latest = markdownEditorsRef.current[tab.id]
+                if (!latest || latest.sessionId !== editor.sessionId) return
+                if (!check.changed) {
+                  patchTab(tab.id, current => ({ ...current, status: 'ready', stale: false, error: undefined }))
+                  return
+                }
+                if (latest.session.isDirty) {
+                  patchMarkdownEditor(tab.id, current => ({
+                    ...current,
+                    session: markExternalChange(current.session, { operation: 'modified', content: null, hash: check.diskVersionHash }),
+                    conflictDismissed: false,
+                  }))
+                  patchTab(tab.id, current => ({ ...current, status: 'ready', stale: true, error: undefined }))
+                  return
+                }
+                const opened = await invoke<{ sessionId: string; snapshot: { filePath: string; content: string; diskVersionHash: string; bom: boolean; lineEnding: LineEnding } }>(
+                  'open_markdown_edit_document', { filePath: latest.session.filePath },
+                )
+                if (externalCheckSequenceRef.current.get(tab.id) !== sequence) {
+                  void invoke('release_markdown_edit_session', { sessionId: opened.sessionId }).catch(() => undefined)
+                  return
+                }
+                const afterRead = markdownEditorsRef.current[tab.id]
+                if (!afterRead || afterRead.sessionId !== editor.sessionId || afterRead.session.isDirty) {
+                  void invoke('release_markdown_edit_session', { sessionId: opened.sessionId }).catch(() => undefined)
+                  if (afterRead?.session.isDirty) {
+                    patchMarkdownEditor(tab.id, current => ({
+                      ...current,
+                      session: markExternalChange(current.session, { operation: 'modified', content: opened.snapshot.content, hash: opened.snapshot.diskVersionHash }),
+                      conflictDismissed: false,
+                    }))
+                  }
+                  return
+                }
+                patchMarkdownEditor(tab.id, current => ({
+                  ...current,
+                  sessionId: opened.sessionId,
+                  session: acceptRemoteVersion(current.session, opened.snapshot),
+                  conflictDismissed: false,
+                }))
+                void invoke('release_markdown_edit_session', { sessionId: afterRead.sessionId }).catch(() => undefined)
+                releaseMarkdownPreview(tab.id)
+                void loadReaderTab(tab.id, tab.canonicalPath)
+              })
+              .catch(() => {
+                if (externalCheckSequenceRef.current.get(tab.id) !== sequence) return
+                markMissing(tab, markdownEditorsRef.current[tab.id])
+              })
+          }
+          const verifyRemoval = (tab: ReaderTabState, editor: MarkdownEditorState | undefined) => {
+            // 原子保存会短暂移除旧目录项；稍后确认规范路径仍不存在，才将标签标为已删除。
+            const sequence = (externalCheckSequenceRef.current.get(tab.id) ?? 0) + 1
+            externalCheckSequenceRef.current.set(tab.id, sequence)
+            window.setTimeout(() => {
+              void invoke<{ exists: boolean }>('inspect_document_path', { filePath: tab.canonicalPath })
+                .then(descriptor => {
+                  if (externalCheckSequenceRef.current.get(tab.id) !== sequence) return
+                  if (!tabStateRef.current.tabs.some(current => current.id === tab.id)) return
+                  if (!descriptor.exists) {
+                    markMissing(tab, markdownEditorsRef.current[tab.id])
+                    return
+                  }
+                  if (editor) {
+                    patchTab(tab.id, current => ({ ...current, status: 'ready', stale: false, error: undefined }))
+                    checkMarkdownModification(tab, editor)
+                  } else if (tab.id === tabStateRef.current.activeTabId) {
+                    const activeLoad = inFlightLoads.current.get(tab.id)
+                    if (activeLoad) void activeLoad.then(() => loadReaderTab(tab.id, tab.canonicalPath))
+                    else void loadReaderTab(tab.id, tab.canonicalPath)
+                  } else {
+                    patchTab(tab.id, current => ({ ...current, status: 'ready', stale: true, error: undefined }))
+                  }
+                })
+                .catch(() => markMissing(tab, markdownEditorsRef.current[tab.id]))
+            }, 160)
+          }
+          for (const tab of changed) {
+            const editor = tab.documentType === 'markdown' ? markdownEditorsRef.current[tab.id] : undefined
+            if (event.payload.operation === 'removed' || event.payload.operation === 'renamed') {
+              verifyRemoval(tab, editor)
+              continue
+            }
+            if (editor) {
+              checkMarkdownModification(tab, editor)
+              continue
+            }
+            if (tab.id === tabStateRef.current.activeTabId) {
               const activeLoad = inFlightLoads.current.get(tab.id)
               if (activeLoad) void activeLoad.then(() => loadReaderTab(tab.id, tab.canonicalPath))
               else void loadReaderTab(tab.id, tab.canonicalPath)
@@ -1540,7 +2203,7 @@ export function App() {
       stopDrop?.()
       stopChanges?.()
     }
-  }, [initialPersistence.session, isDesktop, loadReaderTab, openDocuments, patchTab])
+  }, [initialPersistence.session, isDesktop, loadReaderTab, openDocuments, patchMarkdownEditor, patchTab, releaseMarkdownPreview])
 
   const watchedPaths = tabs.map(tab => tab.canonicalPath).join('\u0000')
   useEffect(() => {
@@ -2027,8 +2690,57 @@ export function App() {
   const refresh = useCallback(() => {
     const state = tabStateRef.current
     const tab = state.tabs.find(item => item.id === state.activeTabId)
-    if (tab) void loadReaderTab(tab.id, tab.canonicalPath)
-  }, [loadReaderTab])
+    if (!tab) return
+    const editor = markdownEditorsRef.current[tab.id]
+    if (!editor || tab.documentType !== 'markdown') {
+      void loadReaderTab(tab.id, tab.canonicalPath)
+      return
+    }
+    if (savingMarkdownIdsRef.current.has(tab.id)) return
+    void (async () => {
+      try {
+        const version = await invoke<{ changed: boolean; diskVersionHash: string }>('check_markdown_edit_version', { sessionId: editor.sessionId })
+        const latest = markdownEditorsRef.current[tab.id]
+        if (!latest || latest.sessionId !== editor.sessionId) return
+        if (version.changed && latest.session.isDirty) {
+          patchMarkdownEditor(tab.id, current => ({
+            ...current,
+            session: markExternalChange(current.session, { operation: 'modified', content: null, hash: version.diskVersionHash }),
+            conflictDismissed: false,
+          }))
+          patchTab(tab.id, current => ({ ...current, stale: true, error: undefined }))
+          return
+        }
+        if (version.changed) {
+          const opened = await invoke<{ sessionId: string; snapshot: { filePath: string; content: string; diskVersionHash: string; bom: boolean; lineEnding: LineEnding } }>(
+            'open_markdown_edit_document', { filePath: latest.session.filePath },
+          )
+          const current = markdownEditorsRef.current[tab.id]
+          if (!current || current.sessionId !== editor.sessionId || current.session.isDirty) {
+            void invoke('release_markdown_edit_session', { sessionId: opened.sessionId }).catch(() => undefined)
+            return
+          }
+          patchMarkdownEditor(tab.id, value => ({
+            ...value,
+            sessionId: opened.sessionId,
+            session: acceptRemoteVersion(value.session, opened.snapshot),
+            conflictDismissed: false,
+          }))
+          void invoke('release_markdown_edit_session', { sessionId: current.sessionId }).catch(() => undefined)
+          releaseMarkdownPreview(tab.id)
+        }
+        void loadReaderTab(tab.id, tab.canonicalPath)
+      } catch {
+        const current = markdownEditorsRef.current[tab.id]
+        if (current) patchMarkdownEditor(tab.id, value => ({
+          ...value,
+          session: markExternalChange(value.session, { operation: 'removed', content: null, hash: null }),
+          conflictDismissed: false,
+        }))
+        patchTab(tab.id, value => ({ ...value, status: 'missing', stale: true, error: undefined }))
+      }
+    })()
+  }, [loadReaderTab, patchMarkdownEditor, patchTab, releaseMarkdownPreview])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2037,8 +2749,28 @@ export function App() {
       const inTextField = target?.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]')
       const command = event.metaKey || event.ctrlKey
       const key = event.key.toLowerCase()
+      const activeEditor = tabStateRef.current.activeTabId
+        ? markdownEditorsRef.current[tabStateRef.current.activeTabId]
+        : undefined
       const searchShortcut = command && (key === 'f' || key === 'g')
-      if (inTextField && event.key !== 'Escape' && !(event.ctrlKey && event.key === 'Tab') && !searchShortcut) return
+      if (activeEditor?.session.activeMode === 'source' && command && key === 's') {
+        event.preventDefault()
+        const id = tabStateRef.current.activeTabId
+        if (id) void saveMarkdownTab(id)
+        return
+      }
+      if (activeEditor?.session.activeMode === 'source' && searchShortcut) {
+        event.preventDefault()
+        const id = tabStateRef.current.activeTabId
+        if (id) {
+          const commands = editorCommandsRef.current[id]
+          if (key === 'f') commands?.search()
+          else if (event.shiftKey) commands?.searchPrevious()
+          else commands?.searchNext()
+        }
+        return
+      }
+      if (inTextField && event.key !== 'Escape' && !(event.ctrlKey && event.key === 'Tab') && !(command && key === 'w') && !searchShortcut) return
 
       if ((event.metaKey && event.key === '[') || (event.altKey && event.key === 'ArrowLeft')) {
         event.preventDefault()
@@ -2101,7 +2833,7 @@ export function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activateTab, chooseFile, closeSearch, closeTab, mediaContent, patchActiveReading, refresh, settingsOpen, stepNavigation])
+  }, [activateTab, chooseFile, closeSearch, closeTab, mediaContent, patchActiveReading, refresh, saveMarkdownTab, settingsOpen, stepNavigation])
 
   useEffect(() => {
     if (!notice) return
@@ -2428,20 +3160,31 @@ export function App() {
   const tocEnd = tocHeadingIndexes ? Math.min(tocHeadings.length, tocStart + TOC_VISIBLE_ROWS) : tocHeadings.length
   const themeLabel = t(settings.theme === 'system' ? '跟随系统' : settings.theme === 'light' ? '浅色' : '深色')
   const ThemeIcon = settings.theme === 'system' ? Monitor : settings.theme === 'light' ? Sun : Moon
+  const isEditingMarkdown = activeMarkdownEditor?.session.activeMode === 'source'
+  const recentFilesForUi = recents.map(item => {
+    const openTab = tabs.find(tab => tab.canonicalPath === item.path && tab.document)
+    return openTab?.document ? { ...item, byteSize: openTab.document.byteSize } : item
+  })
+  const selectedSidebarSection: SidebarSection = settingsOpen
+    ? 'settings'
+    : appPage === 'reader'
+      ? sidebarSection
+      : appPage
 
   return (
     <I18nProvider locale={locale}>
-    <div className={'reader-shell' + (dragging ? ' is-dragging' : '')}>
+    <div className={'reader-shell' + (dragging ? ' is-dragging' : '')} style={{ '--workspace-width': `${sidebarWidth}px` } as CSSProperties}>
       <AppHeader
         logo={headerLogo}
-        tabs={tabs}
+        onGoHome={() => { setSidebarSection('home'); setAppPage('home') }}
+        tabs={tabs.map(tab => ({ ...tab, dirty: Boolean(markdownEditors[tab.id]?.session.isDirty) }))}
         activeTabId={activeTabId}
         activeDocumentType={activeTab?.documentType ?? null}
         canToggleNavigation={canToggleNavigation}
         canSearch={canSearchActiveDocument}
         navigationLabel={t(readerDocument ? '文档目录' : '页面导航')}
         loading={loading}
-        searchOpen={searchOpen && Boolean(activeDocument)}
+        searchOpen={searchOpen && Boolean(activeDocument) && activeMarkdownEditor?.session.activeMode !== 'source'}
         searchQuery={searchQuery}
         searchIndex={searchIndex}
         searchCount={searchCount}
@@ -2453,8 +3196,12 @@ export function App() {
         canGoBack={navigation.currentIndex > 0}
         canGoForward={navigation.currentIndex >= 0 && navigation.currentIndex < navigation.entries.length - 1}
         navigationBusy={navigationBusy}
-        canExportPdf={Boolean(isDesktop && readerDocument && contentReady && !loading)}
+        canExportPdf={Boolean(isDesktop && readerDocument && contentReady && !loading && !activeMarkdownEditor?.session.isDirty)}
         exportingPdf={exportingPdf}
+        markdownMode={activeMarkdownEditor?.session.activeMode === 'source' ? 'edit' : 'read'}
+        markdownDirty={Boolean(activeMarkdownEditor?.session.isDirty)}
+        markdownCanUndo={Boolean(activeMarkdownEditor?.canUndo)}
+        markdownCanRedo={Boolean(activeMarkdownEditor?.canRedo)}
         pagedControls={activeTab && pdfReaderDocument ? {
           documentType: 'pdf',
           page: activeTab.reading.pdfPage ?? 1,
@@ -2485,7 +3232,8 @@ export function App() {
         onExportPdf={() => { void exportPdf() }}
         onRefresh={refresh}
         onToggleSearch={() => {
-          if (searchOpen) closeSearch()
+          if (activeMarkdownEditor?.session.activeMode === 'source' && activeTabId) editorCommandsRef.current[activeTabId]?.search()
+          else if (searchOpen) closeSearch()
           else patchActiveReading({ searchOpen: true, tocOpen: false })
         }}
         onToggleToc={() => patchActiveReading({ tocOpen: !tocOpen, searchOpen: false })}
@@ -2503,9 +3251,68 @@ export function App() {
         }}
         onSearchKeyDown={handleSearchKeyDown}
         onCloseSearch={closeSearch}
-        onActivateTab={activateTab}
+        onActivateTab={id => { setAppPage('reader'); activateTab(id) }}
         onCloseTab={closeTab}
+        onSetMarkdownMode={mode => { if (activeTabId) void setMarkdownMode(activeTabId, mode) }}
+        onSaveMarkdown={() => { if (activeTabId) void saveMarkdownTab(activeTabId) }}
+        onSaveMarkdownAs={() => { if (activeTabId) void saveMarkdownAs(activeTabId).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))) }}
+        onNewMarkdown={() => { void createNewMarkdown() }}
+        onUndoMarkdown={() => { if (activeTabId) editorCommandsRef.current[activeTabId]?.undo() }}
+        onRedoMarkdown={() => { if (activeTabId) editorCommandsRef.current[activeTabId]?.redo() }}
       />
+
+      <SidebarNavigation
+        active={selectedSidebarSection}
+        expanded={!workspaceUi.sidebarCollapsed}
+        width={workspaceUi.sidebarWidth}
+        workspaceAvailable={Boolean(workspace)}
+        workspaceContent={workspace ? <FileTree
+            workspace={workspace}
+            activePath={activeTab?.canonicalPath ?? null}
+            width={workspaceUi.sidebarWidth}
+            collapsed={false}
+            onWidthChange={setWorkspaceWidth}
+            onChooseWorkspace={() => { void chooseWorkspace() }}
+            onOpen={path => { setSidebarSection('workspace'); void openDocuments([path], 'workspace') }}
+            onCreateMarkdown={createWorkspaceMarkdown}
+            embedded
+          /> : undefined}
+        onNavigate={section => {
+          setSidebarSection(section)
+          setAppPage(section)
+          if (section === 'workspace') setWorkspaceUi(value => ({ ...value, sidebarCollapsed: false }))
+        }}
+        onOpenSettings={() => { setSettingsSection('appearance'); setSettingsSectionRequest(request => request + 1); setSettingsOpen(true) }}
+        onChooseWorkspace={() => { void chooseWorkspace() }}
+        onToggleExpanded={() => setWorkspaceUi(value => ({ ...value, sidebarCollapsed: !value.sidebarCollapsed }))}
+        onWidthChange={setWorkspaceWidth}
+      />
+
+      {appPage === 'home' && <main className="navigation-view" aria-label={t('首页')}>
+        <HomePage
+          logo={logo}
+          recents={recentFilesForUi}
+          locale={locale}
+          onOpen={() => { void chooseFile() }}
+          onOpenWorkspace={() => workspace
+            ? (setSidebarSection('workspace'), setWorkspaceUi(value => ({ ...value, sidebarCollapsed: false })), setAppPage('workspace'))
+            : void chooseWorkspace()}
+          onOpenRecent={path => { setSidebarSection('recent'); setAppPage('reader'); void openDocuments([path], 'recent') }}
+          onRemoveRecent={removeRecent}
+          onShowAllRecents={() => { setSidebarSection('recent'); setAppPage('recent') }}
+        />
+      </main>}
+      {appPage === 'recent' && <RecentFilesPage
+        files={recentFilesForUi}
+        locale={locale}
+        onOpen={path => { setSidebarSection('recent'); setAppPage('reader'); void openDocuments([path], 'recent') }}
+        onRemove={removeRecent}
+      />}
+      {appPage === 'workspace' && <WorkspaceLanding
+        workspaceName={workspace?.displayName}
+        hasWorkspace={Boolean(workspace)}
+        onOpenWorkspace={() => { void chooseWorkspace() }}
+      />}
 
       {tocOpen && readerDocument && <aside className="toc-popover" aria-label={t('文档目录')}>
         <div className="popover-heading"><strong>{t('目录')}</strong><button className="icon-button compact" onClick={() => patchActiveReading({ tocOpen: false })} aria-label={t('关闭目录')}><X size={15} /></button></div>
@@ -2550,9 +3357,63 @@ export function App() {
         onClose={() => patchActiveReading({ tocOpen: false })}
       />}
 
-      <main className={'reader-main' + (readerDocument ? ' has-document' : ' is-home') + ((pdfReaderDocument || ofdReaderDocument) ? ' has-paged-document' : '')}>
+      <main aria-hidden={appPage !== 'reader'} className={'reader-main' + (readerDocument || isEditingMarkdown ? ' has-document' : ' is-home') + ((pdfReaderDocument || ofdReaderDocument) ? ' has-paged-document' : '') + ' sidebar-visible' + (isEditingMarkdown ? ' is-markdown-editing' : '')} style={{ visibility: appPage === 'reader' ? 'visible' : 'hidden', pointerEvents: appPage === 'reader' ? 'auto' : 'none' }}>
         {activeError && <div className={'reader-alert' + (missingOnDisk ? ' is-warning' : '')} role={missingOnDisk ? 'status' : 'alert'}><span>{displayedActiveError}</span>{activeTab && <button onClick={refresh}>{t('重试')}</button>}{!activeTab && <button onClick={() => setError('')} aria-label={t('关闭提示')}><X size={15} /></button>}</div>}
-        {readerDocument ? <>
+        {activeMarkdownEditor?.session.externalChange && activeTab?.documentType === 'markdown' && <ExternalChangeBanner
+          change={activeMarkdownEditor.session.externalChange}
+          dismissed={activeMarkdownEditor.conflictDismissed}
+          onReload={() => {
+            const current = markdownEditorsRef.current[activeTab.id]
+            if (!current) return
+            if (current.session.isDirty && !window.confirm(t('重新加载将丢弃当前未保存的编辑内容。是否继续？'))) return
+            const revision = current.session.revision
+            void (async () => {
+              try {
+                const opened = await invoke<{ sessionId: string; snapshot: { filePath: string; content: string; diskVersionHash: string; bom: boolean; lineEnding: LineEnding } }>(
+                  'open_markdown_edit_document', { filePath: current.session.filePath },
+                )
+                const latest = markdownEditorsRef.current[activeTab.id]
+                if (!latest || latest.sessionId !== current.sessionId || latest.session.revision !== revision) {
+                  void invoke('release_markdown_edit_session', { sessionId: opened.sessionId }).catch(() => undefined)
+                  setError(t('重新加载期间编辑内容已变化，草稿仍保留。'))
+                  return
+                }
+                patchMarkdownEditor(activeTab.id, editor => ({
+                  ...editor,
+                  sessionId: opened.sessionId,
+                  session: acceptRemoteVersion(editor.session, opened.snapshot),
+                  conflictDismissed: false,
+                }))
+                void invoke('release_markdown_edit_session', { sessionId: current.sessionId }).catch(() => undefined)
+                releaseMarkdownPreview(activeTab.id)
+                await loadReaderTab(activeTab.id, activeTab.canonicalPath)
+              } catch (reason) {
+                setError(reason instanceof Error ? reason.message : String(reason))
+              }
+            })()
+          }}
+          onSaveAs={() => { void saveMarkdownAs(activeTab.id).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))) }}
+          onContinue={() => patchMarkdownEditor(activeTab.id, editor => ({ ...editor, conflictDismissed: true }))}
+        />}
+        {isEditingMarkdown && activeTab && activeMarkdownEditor ? <div className="markdown-editor-panel">
+          <Suspense fallback={<div className="markdown-editor-loading" role="status">{t('正在加载')}</div>}>
+            <CodeMirrorEditor
+              key={activeTab.id}
+              value={activeMarkdownEditor.session.currentContent}
+              theme={actualTheme}
+              fontSizePx={settings.editorFontSizePx}
+              initialViewState={activeMarkdownEditor.viewState}
+              onChange={content => patchMarkdownEditor(activeTab.id, editor => ({ ...editor, session: updateSessionContent(editor.session, content) }))}
+              onSave={() => { void saveMarkdownTab(activeTab.id) }}
+              onViewStateChange={state => patchMarkdownEditor(activeTab.id, editor => ({ ...editor, viewState: state }))}
+              onCommandsReady={commands => {
+                if (commands) editorCommandsRef.current[activeTab.id] = commands
+                else delete editorCommandsRef.current[activeTab.id]
+              }}
+              onHistoryChange={history => patchMarkdownEditor(activeTab.id, editor => ({ ...editor, canUndo: history.canUndo, canRedo: history.canRedo }))}
+            />
+          </Suspense>
+        </div> : readerDocument ? <>
           {readerDocument.missingResources.length > 0 && <div className="resource-notice" role="status">
             <span>{t('部分资源无法显示：{resources}{more}', {
               resources: readerDocument.missingResources.slice(0, 3).join(locale === 'zh-CN' ? '；' : ', '),
@@ -2608,12 +3469,18 @@ export function App() {
           onFitHeightReady={registerOfdFitHeight}
         /></Suspense> : activeTab
           ? <ReaderTabLoadState tab={activeTab} onRetry={refresh} />
-          : <ReaderWelcomePanel
+          : appPage === 'reader' ? <ReaderWelcomePanel
             logo={logo}
-            recents={recents}
+            recents={recentFilesForUi}
+            locale={locale}
             onOpen={() => { void chooseFile() }}
-            onOpenRecent={path => { void openDocuments([path], 'recent') }}
-          />}
+            onOpenWorkspace={() => { workspace
+              ? (setSidebarSection('workspace'), setWorkspaceUi(value => ({ ...value, sidebarCollapsed: false })), setAppPage('workspace'))
+              : void chooseWorkspace() }}
+            onOpenRecent={path => { setSidebarSection('recent'); setAppPage('reader'); void openDocuments([path], 'recent') }}
+            onRemoveRecent={removeRecent}
+            onShowAllRecents={() => { setSidebarSection('recent'); setAppPage('recent') }}
+          /> : null}
         {dragging && <div className="drop-overlay"><div><BookOpen size={25} /><strong>{t('松开放入文档')}</strong><span>{t('支持 .md、.markdown、.pdf 和 .ofd')}</span></div></div>}
       </main>
 
@@ -2624,8 +3491,8 @@ export function App() {
         articleRef={articleRef}
       />}
 
-      <footer className="reader-footer">
-        <div className="footer-left"><span className="readonly-dot" />{t('只读')}{activeDocument && <><span className="footer-separator">·</span><span className="footer-file-size">{formatByteSize(activeDocument.byteSize)}</span></>}</div>
+      <footer className="reader-footer sidebar-visible">
+        <div className="footer-left"><span className="readonly-dot" />{t(isEditingMarkdown ? '编辑' : '只读')}{activeDocument && <><span className="footer-separator">·</span><span className="footer-file-size">{formatByteSize(activeDocument.byteSize)}</span></>}</div>
         {readerDocument && <div className="zoom-controls" aria-label={t('阅读缩放')}>
           <button className="icon-button compact" onClick={() => setZoom(value => Math.max(85, value - 5))} disabled={zoom <= 85} aria-label={t('缩小字号')}><ZoomOut size={15} /></button>
           <button className="zoom-value" onClick={() => setZoom(100)} title={t('恢复默认缩放（⌘0 / Ctrl+0）')}>{zoom}%</button>
@@ -2680,6 +3547,15 @@ export function App() {
         onClearPositions={clearPositions}
         onClearSession={clearSession}
       />
+      {unsavedGuard && <UnsavedChangesDialog
+        open
+        kind={unsavedGuard.kind}
+        fileNames={unsavedGuard.ids.map(id => tabStateRef.current.tabs.find(tab => tab.id === id)?.displayName ?? pathFileName(markdownEditorsRef.current[id]?.session.filePath ?? id))}
+        error={unsavedGuardError}
+        onSave={() => { void finishUnsavedGuard('save') }}
+        onDiscard={() => { void finishUnsavedGuard('discard') }}
+        onCancel={() => { setUnsavedGuard(null); setUnsavedGuardError('') }}
+      />}
     </div>
     </I18nProvider>
   )

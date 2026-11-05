@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "mdstudio"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ammonia",
  "base64 0.22.1",
@@ -2232,6 +2232,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tempfile",
  "thiserror 2.0.21",
  "ttf-parser",
  "webview2-com",

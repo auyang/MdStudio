@@ -39,7 +39,7 @@ describe('Reader 本地偏好与会话存储', () => {
       schemaVersion: 1, theme: 'dark', fontSizePx: 18, readingWidth: 'standard', restoreTabs: false, rememberPosition: false,
     }))
     expect(loadReaderPersistence(localStorage).settings).toEqual({
-      schemaVersion: 1, theme: 'dark', fontSizePx: 18, readingWidth: 'standard', restoreTabs: false, rememberPosition: false, doubleClickToClose: true,
+      schemaVersion: 1, theme: 'dark', fontSizePx: 18, editorFontSizePx: 14, readingWidth: 'standard', restoreTabs: false, rememberPosition: false, doubleClickToClose: true,
       ofdSystemFontFallback: true, ofdFallbackFont: 'auto',
     })
   })
@@ -54,12 +54,22 @@ describe('Reader 本地偏好与会话存储', () => {
       schemaVersion: 1, theme: 'neon', fontSizePx: 32.4, readingWidth: 'giant', restoreTabs: false,
     }))
     expect(loadReaderPersistence(localStorage).settings).toEqual({
-      schemaVersion: 1, theme: 'system', fontSizePx: 24, readingWidth: 'wide', restoreTabs: false, rememberPosition: true, doubleClickToClose: true,
+      schemaVersion: 1, theme: 'system', fontSizePx: 24, editorFontSizePx: 14, readingWidth: 'wide', restoreTabs: false, rememberPosition: true, doubleClickToClose: true,
       ofdSystemFontFallback: true, ofdFallbackFont: 'auto',
     })
     const belowMin: ReaderSettingsV1 = { ...DEFAULT_READER_SETTINGS, fontSizePx: 3 }
     expect(saveReaderSettings(localStorage, belowMin)).toBe(true)
     expect(loadReaderPersistence(localStorage).settings.fontSizePx).toBe(12)
+  })
+
+  it('校验并持久化源码编辑器字号', () => {
+    localStorage.setItem(READER_STORAGE_KEYS.settings, JSON.stringify({
+      ...DEFAULT_READER_SETTINGS,
+      editorFontSizePx: 30,
+    }))
+    expect(loadReaderPersistence(localStorage).settings.editorFontSizePx).toBe(24)
+    expect(saveReaderSettings(localStorage, { ...DEFAULT_READER_SETTINGS, editorFontSizePx: 11 })).toBe(true)
+    expect(loadReaderPersistence(localStorage).settings.editorFontSizePx).toBe(11)
   })
 
   it('持久化 OFD 系统字体替代开关与兜底风格', () => {

@@ -10,6 +10,7 @@ export type ReaderSettingsV1 = {
   schemaVersion: 1
   theme: ThemePreference
   fontSizePx: number
+  editorFontSizePx: number
   readingWidth: ReadingWidth
   restoreTabs: boolean
   rememberPosition: boolean
@@ -80,6 +81,7 @@ export const DEFAULT_READER_SETTINGS: ReaderSettingsV1 = {
   schemaVersion: 1,
   theme: 'system',
   fontSizePx: 16,
+  editorFontSizePx: 14,
   readingWidth: 'wide',
   restoreTabs: true,
   rememberPosition: true,
@@ -151,6 +153,9 @@ function normalizeSettings(value: unknown): ReaderSettingsV1 | null {
   const fontSize = typeof value.fontSizePx === 'number' && Number.isFinite(value.fontSizePx)
     ? Math.min(24, Math.max(12, Math.round(value.fontSizePx)))
     : DEFAULT_READER_SETTINGS.fontSizePx
+  const editorFontSize = typeof value.editorFontSizePx === 'number' && Number.isFinite(value.editorFontSizePx)
+    ? Math.min(24, Math.max(10, Math.round(value.editorFontSizePx)))
+    : DEFAULT_READER_SETTINGS.editorFontSizePx
   const readingWidth: ReadingWidth = value.readingWidth === 'compact' || value.readingWidth === 'wide' || value.readingWidth === 'standard' || value.readingWidth === 'fit'
     ? value.readingWidth
     : DEFAULT_READER_SETTINGS.readingWidth
@@ -158,6 +163,7 @@ function normalizeSettings(value: unknown): ReaderSettingsV1 | null {
     schemaVersion: 1,
     theme,
     fontSizePx: fontSize,
+    editorFontSizePx: editorFontSize,
     readingWidth,
     restoreTabs: typeof value.restoreTabs === 'boolean' ? value.restoreTabs : DEFAULT_READER_SETTINGS.restoreTabs,
     rememberPosition: typeof value.rememberPosition === 'boolean' ? value.rememberPosition : DEFAULT_READER_SETTINGS.rememberPosition,

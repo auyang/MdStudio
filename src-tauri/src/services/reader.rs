@@ -112,30 +112,84 @@ pub struct ReaderPerformanceTimings {
 }
 
 pub fn load_document(file_path: &str) -> Result<ReaderDocument, ReaderError> {
+    load_document_inner(file_path, None)
+}
+
+pub fn render_document_from_source(
+    file_path: &str,
+    source: &str,
+) -> Result<ReaderDocument, ReaderError> {
+    if source.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(ReaderError::DocumentTooLarge(file_path.to_string()));
+    }
+    load_document_inner(file_path, Some(source))
+}
+
+fn load_document_inner(
+    file_path: &str,
+    source_override: Option<&str>,
+) -> Result<ReaderDocument, ReaderError> {
     #[cfg(feature = "perf-benchmark")]
     let total_started = Instant::now();
-    let inspected = crate::services::documents::inspect_document_path(file_path).map_err(
-        |error| match error {
-            crate::services::documents::DocumentPathError::Io(error) => ReaderError::Io(error),
-            crate::services::documents::DocumentPathError::InvalidPath(_) => {
-                ReaderError::InvalidPath(file_path.to_string())
-            }
-        },
-    )?;
-    if inspected.document_type != crate::services::documents::DocumentType::Markdown {
-        return Err(ReaderError::InvalidPath(file_path.to_string()));
-    }
-    let path = PathBuf::from(inspected.canonical_path);
-    let metadata = fs::metadata(&path)?;
-    if !metadata.is_file() {
-        return Err(ReaderError::InvalidPath(file_path.to_string()));
-    }
-    if metadata.len() > MAX_DOCUMENT_BYTES {
+    let path = if source_override.is_some() {
+        if crate::services::documents::document_type(Path::new(file_path))
+            != Some(crate::services::documents::DocumentType::Markdown)
+            || Path::new(file_path)
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(ReaderError::InvalidPath(file_path.to_string()));
+        }
+        let requested = Path::new(file_path);
+        let parent = requested
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .canonicalize()?;
+        PathBuf::from(
+            parent.join(
+                requested
+                    .file_name()
+                    .ok_or_else(|| ReaderError::InvalidPath(file_path.to_string()))?,
+            ),
+        )
+    } else {
+        let inspected =
+            crate::services::documents::inspect_document_path(file_path).map_err(|error| {
+                match error {
+                    crate::services::documents::DocumentPathError::Io(error) => {
+                        ReaderError::Io(error)
+                    }
+                    crate::services::documents::DocumentPathError::InvalidPath(_) => {
+                        ReaderError::InvalidPath(file_path.to_string())
+                    }
+                }
+            })?;
+        if inspected.document_type != crate::services::documents::DocumentType::Markdown {
+            return Err(ReaderError::InvalidPath(file_path.to_string()));
+        }
+        PathBuf::from(inspected.canonical_path)
+    };
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => Some(metadata),
+        Ok(_) => return Err(ReaderError::InvalidPath(file_path.to_string())),
+        Err(error) if source_override.is_some() && error.kind() == std::io::ErrorKind::NotFound => {
+            None
+        }
+        Err(error) => return Err(ReaderError::Io(error)),
+    };
+    if source_override.is_none()
+        && metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.len() > MAX_DOCUMENT_BYTES)
+    {
         return Err(ReaderError::DocumentTooLarge(file_path.to_string()));
     }
     #[cfg(feature = "perf-benchmark")]
     let read_started = Instant::now();
-    let bytes = fs::read(&path)?;
+    let bytes = match source_override {
+        Some(source) => source.as_bytes().to_vec(),
+        None => fs::read(&path)?,
+    };
     #[cfg(feature = "perf-benchmark")]
     let read_ms = elapsed_ms(read_started);
     if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
@@ -318,8 +372,8 @@ pub fn load_document(file_path: &str) -> Result<ReaderDocument, ReaderError> {
         })
         .collect();
     let modified_unix_ms = metadata
-        .modified()
-        .ok()
+        .as_ref()
+        .and_then(|metadata| metadata.modified().ok())
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis());
     let file_name = path
@@ -1080,6 +1134,26 @@ mod tests {
         assert!(!document.html.contains("<script"));
         assert!(!document.html.contains("onerror="));
         assert!(!document.html.contains("javascript:"));
+    }
+
+    #[test]
+    fn renders_unsaved_source_through_the_same_sanitized_comrak_pipeline() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("draft.md");
+        let source = "# 草稿\n\n<script>bad()</script><img src=x onerror=bad()>\n\n[危险](javascript:alert(1))\n";
+        let document = render_document_from_source(path.to_str().unwrap(), source).unwrap();
+
+        assert_eq!(
+            document
+                .headings
+                .first()
+                .map(|heading| heading.text.as_str()),
+            Some("草稿")
+        );
+        assert!(!document.html.contains("<script"));
+        assert!(!document.html.contains("onerror="));
+        assert!(!document.html.contains("javascript:"));
+        assert!(!path.exists());
     }
 
     #[test]

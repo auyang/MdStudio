@@ -31,7 +31,7 @@ export function ReadingWidthPicker({ value, onChange, documentType, onFitWidth, 
   }
 
   return (
-    <details ref={detailsRef} className="reader-width-picker">
+    <details ref={detailsRef} className="reader-width-picker" data-dismiss-outside>
       <summary title={t('阅读宽度')} aria-label={t('阅读宽度：{label}', { label: t(selected.label) })}>
         <span className="reader-width-prefix">{t('阅读宽度')}:</span>
         <span>{t(selected.label)}</span>

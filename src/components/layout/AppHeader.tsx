@@ -1,8 +1,10 @@
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   ChevronLeft,
   ChevronRight,
+  Code2,
   Eraser,
   FileDown,
   FileText,
@@ -11,11 +13,14 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
+  Redo2,
   RotateCw,
+  Save,
   Search,
   X,
   ZoomIn,
   ZoomOut,
+  Undo2,
 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode, RefObject } from 'react'
@@ -31,10 +36,14 @@ export type HeaderTab = {
   status: ReaderTabStatus
   stale: boolean
   documentType: DocumentType
+  dirty?: boolean
 }
+
+type MarkdownMode = 'read' | 'edit'
 
 type AppHeaderProps = {
   logo: ReactNode
+  onGoHome?: () => void
   tabs: HeaderTab[]
   activeTabId: string | null
   loading: boolean
@@ -56,6 +65,10 @@ type AppHeaderProps = {
   navigationBusy: boolean
   canExportPdf: boolean
   exportingPdf: boolean
+  markdownMode?: MarkdownMode
+  markdownDirty?: boolean
+  markdownCanUndo?: boolean
+  markdownCanRedo?: boolean
   pagedControls?: {
     documentType: 'pdf' | 'ofd'
     page: number
@@ -84,6 +97,12 @@ type AppHeaderProps = {
   onCloseSearch: () => void
   onActivateTab: (id: string) => void
   onCloseTab: (id: string) => void
+  onSetMarkdownMode?: (mode: MarkdownMode) => void
+  onSaveMarkdown?: () => void
+  onSaveMarkdownAs?: () => void
+  onNewMarkdown?: () => void
+  onUndoMarkdown?: () => void
+  onRedoMarkdown?: () => void
 }
 
 function tabLabel(tab: HeaderTab, tabs: HeaderTab[]): string {
@@ -103,6 +122,7 @@ function tabLabel(tab: HeaderTab, tabs: HeaderTab[]): string {
 
 export function AppHeader({
   logo,
+  onGoHome,
   tabs,
   activeTabId,
   loading,
@@ -124,6 +144,10 @@ export function AppHeader({
   navigationBusy,
   canExportPdf,
   exportingPdf,
+  markdownMode = 'read',
+  markdownDirty = false,
+  markdownCanUndo = false,
+  markdownCanRedo = false,
   pagedControls,
   onGoBack,
   onGoForward,
@@ -140,6 +164,12 @@ export function AppHeader({
   onCloseSearch,
   onActivateTab,
   onCloseTab,
+  onSetMarkdownMode,
+  onSaveMarkdown,
+  onSaveMarkdownAs,
+  onNewMarkdown,
+  onUndoMarkdown,
+  onRedoMarkdown,
 }: AppHeaderProps) {
   const t = useI18n()
   const isMacWindow = isTauri() && /Macintosh|Mac OS/i.test(navigator.userAgent)
@@ -215,7 +245,8 @@ export function AppHeader({
       <div className="brand-area" data-tauri-drag-region={isMacWindow ? '' : undefined}>
         <a className="brand-home" href="#home" aria-label={t('MdStudio 首页')} onClick={event => {
           event.preventDefault()
-          window.scrollTo({ top: 0, behavior: 'smooth' })
+          if (onGoHome) onGoHome()
+          else window.scrollTo({ top: 0, behavior: 'smooth' })
         }}>{logo}</a>
       </div>
 
@@ -262,6 +293,7 @@ export function AppHeader({
             >
               <FileText size={14} aria-hidden="true" />
               <span>{tabLabel(tab, tabs)}</span>
+              {tab.dirty && <span className="reader-tab-dirty" aria-label={t('未保存')} title={t('未保存')}>●</span>}
               {tab.status === 'loading' && <LoaderCircle className="is-spinning" size={12} aria-label={t('正在加载')} />}
               {tab.status === 'error' && <span className="reader-tab-indicator is-error" aria-label={t('读取失败')} />}
               {(tab.status === 'missing' || tab.stale) && <span className="reader-tab-indicator is-stale" aria-label={t(tab.status === 'missing' ? '文件已删除' : '文件已更改')} />}
@@ -293,6 +325,17 @@ export function AppHeader({
 
       <div className="topbar-actions">
         {pagedControls && <PagedToolbar {...pagedControls} compactForMac={isMacWindow} />}
+        {activeDocumentType === 'markdown' && onSetMarkdownMode && <div className="markdown-toolbar-tools" role="group" aria-label={t('Markdown 编辑工具')}>
+          <div className="markdown-mode-switch" role="group" aria-label={t('Markdown 模式')}>
+            <button type="button" className={markdownMode === 'read' ? 'is-selected' : ''} aria-pressed={markdownMode === 'read'} onClick={() => onSetMarkdownMode('read')} title={t('阅读模式')}><BookOpen size={14} /><span>{t('阅读')}</span></button>
+            <button type="button" className={markdownMode === 'edit' ? 'is-selected' : ''} aria-pressed={markdownMode === 'edit'} onClick={() => onSetMarkdownMode('edit')} title={t('编辑模式')}><Code2 size={14} /><span>{t('编辑')}</span></button>
+          </div>
+          {markdownMode === 'edit' && <>
+            <button type="button" className="icon-button compact markdown-save-button" onClick={onSaveMarkdown} disabled={!markdownDirty} title={t('保存 Markdown（⌘S / Ctrl+S）')} aria-label={t('保存 Markdown')}><Save size={15} /></button>
+            <button type="button" className="icon-button compact toolbar-secondary" onClick={onUndoMarkdown} disabled={!markdownCanUndo} title={t('撤销')} aria-label={t('撤销')}><Undo2 size={15} /></button>
+            <button type="button" className="icon-button compact toolbar-secondary" onClick={onRedoMarkdown} disabled={!markdownCanRedo} title={t('重做')} aria-label={t('重做')}><Redo2 size={15} /></button>
+          </>}
+        </div>}
         {searchOpen && <div className={'search-box' + (searchPending ? ' is-pending' : '')} role="search" aria-label={t('搜索当前文档')}>
           <Search size={15} aria-hidden="true" />
           <input ref={searchInputRef} type="search" autoComplete="off" spellCheck={false} enterKeyHint="search" value={searchQuery} onChange={event => onSearchQueryChange(event.target.value)} onKeyDown={onSearchKeyDown} placeholder={t('搜索本文')} aria-label={t('搜索本文')} aria-describedby="search-result-status" />
@@ -309,9 +352,15 @@ export function AppHeader({
         {tabs.length > 0 && canSearch && activeDocumentType && <button ref={searchToggleRef} className={'icon-button' + (searchOpen ? ' is-active' : '')} onClick={onToggleSearch} title={t('搜索本文（⌘F / Ctrl+F）')} aria-label={t('搜索本文')}><Search size={17} /></button>}
         {canExportPdf && <button className="icon-button toolbar-secondary" onClick={onExportPdf} disabled={exportingPdf} title={t(exportingPdf ? '正在导出 PDF…' : '导出 PDF')} aria-label={t(exportingPdf ? '正在导出 PDF…' : '导出 PDF')}>{exportingPdf ? <LoaderCircle className="is-spinning" size={17} /> : <FileDown size={17} />}</button>}
         {tabs.length > 0 && canToggleNavigation && <button className={'icon-button toolbar-secondary' + (tocOpen ? ' is-active' : '')} onClick={onToggleToc} title={navigationLabel} aria-label={navigationLabel}><ListTree size={17} /></button>}
-        <details ref={moreMenuRef} className="topbar-more">
+        <details ref={moreMenuRef} className="topbar-more" data-dismiss-outside>
           <summary className="icon-button topbar-more-trigger" aria-label={t('更多阅读工具')} title={t('更多阅读工具')}><MoreHorizontal size={18} /></summary>
           <div className="topbar-more-panel" role="group" aria-label={t('更多阅读工具')}>
+            {onNewMarkdown && <button className="icon-button" onClick={() => { closeMoreMenu(); onNewMarkdown() }} title={t('新建 Markdown')} aria-label={t('新建 Markdown')}><Plus size={17} /><span className="topbar-more-label">{t('新建 Markdown')}</span></button>}
+            {markdownMode === 'edit' && onSaveMarkdownAs && <button className="icon-button" onClick={() => { closeMoreMenu(); onSaveMarkdownAs() }} title={t('另存为 Markdown')} aria-label={t('另存为 Markdown')}><Save size={17} /><span className="topbar-more-label">{t('另存为 Markdown')}</span></button>}
+            {markdownMode === 'edit' && <>
+              <button className="icon-button" onClick={() => { closeMoreMenu(); onUndoMarkdown?.() }} disabled={!markdownCanUndo} title={t('撤销')} aria-label={t('撤销')}><Undo2 size={17} /><span className="topbar-more-label">{t('撤销')}</span></button>
+              <button className="icon-button" onClick={() => { closeMoreMenu(); onRedoMarkdown?.() }} disabled={!markdownCanRedo} title={t('重做')} aria-label={t('重做')}><Redo2 size={17} /><span className="topbar-more-label">{t('重做')}</span></button>
+            </>}
             {pagedControls && <>
               <button className="icon-button" onClick={() => { closeMoreMenu(); pagedControls.onRotate() }} title={t('旋转页面')} aria-label={t('旋转页面')}><RotateCw size={17} /><span className="topbar-more-label">{t('旋转页面')}</span></button>
             </>}

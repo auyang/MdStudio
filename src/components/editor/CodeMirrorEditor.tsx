@@ -1,12 +1,12 @@
-import { useEffect, useRef } from 'react'
 import { closeBrackets } from '@codemirror/autocomplete'
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap, indentWithTab, redo, redoDepth, undo, undoDepth } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
 import {
   bracketMatching,
   defaultHighlightStyle,
   foldGutter,
   indentOnInput,
+  indentUnit,
   syntaxHighlighting,
 } from '@codemirror/language'
 import { Compartment, EditorState } from '@codemirror/state'
@@ -18,33 +18,79 @@ import {
   keymap,
   lineNumbers,
 } from '@codemirror/view'
-import { openSearchPanel, search, searchKeymap } from '@codemirror/search'
+import { findNext, findPrevious, openSearchPanel, search, searchKeymap } from '@codemirror/search'
+import { useEffect, useRef } from 'react'
+
+export type CodeMirrorViewState = {
+  anchor: number
+  head: number
+  scrollTop: number
+  scrollLeft: number
+}
+
+export type CodeMirrorCommands = {
+  undo: () => void
+  redo: () => void
+  search: () => void
+  searchNext: () => void
+  searchPrevious: () => void
+}
+
+type HistoryState = { canUndo: boolean; canRedo: boolean }
 
 interface CodeMirrorEditorProps {
   value: string
   theme: 'light' | 'dark'
+  fontSizePx: number
+  initialViewState?: CodeMirrorViewState
   onChange: (value: string) => void
-  onViewReady?: (view: EditorView | null) => void
-  onSearchReady?: (search: (() => void) | null) => void
+  onSave: () => void
+  onViewStateChange?: (value: CodeMirrorViewState) => void
+  onCommandsReady?: (commands: CodeMirrorCommands | null) => void
+  onHistoryChange?: (value: HistoryState) => void
 }
 
-export function CodeMirrorEditor({ value, theme, onChange, onViewReady, onSearchReady }: CodeMirrorEditorProps) {
+function viewState(view: EditorView): CodeMirrorViewState {
+  const selection = view.state.selection.main
+  return {
+    anchor: selection.anchor,
+    head: selection.head,
+    scrollTop: view.scrollDOM.scrollTop,
+    scrollLeft: view.scrollDOM.scrollLeft,
+  }
+}
+
+export function CodeMirrorEditor({
+  value,
+  theme,
+  fontSizePx,
+  initialViewState,
+  onChange,
+  onSave,
+  onViewStateChange,
+  onCommandsReady,
+  onHistoryChange,
+}: CodeMirrorEditorProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const onChangeRef = useRef(onChange)
-  const onViewReadyRef = useRef(onViewReady)
-  const onSearchReadyRef = useRef(onSearchReady)
-  const themeCompartmentRef = useRef(new Compartment())
+  const onSaveRef = useRef(onSave)
+  const onViewStateChangeRef = useRef(onViewStateChange)
+  const onCommandsReadyRef = useRef(onCommandsReady)
+  const onHistoryChangeRef = useRef(onHistoryChange)
+  const styleCompartmentRef = useRef(new Compartment())
   onChangeRef.current = onChange
-  onViewReadyRef.current = onViewReady
-  onSearchReadyRef.current = onSearchReady
+  onSaveRef.current = onSave
+  onViewStateChangeRef.current = onViewStateChange
+  onCommandsReadyRef.current = onCommandsReady
+  onHistoryChangeRef.current = onHistoryChange
 
-  const editorTheme = (dark: boolean) => [
+  const editorTheme = (dark: boolean, fontSize: number) => [
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     EditorView.theme({
-      '&': { height: '100%', color: 'var(--ink)', backgroundColor: 'var(--paper)' },
-      '.cm-scroller': { fontFamily: 'var(--font-mono)', lineHeight: '1.78', overflow: 'auto' },
-      '.cm-content': { minHeight: '100%', padding: '34px 28px 60px 16px', caretColor: 'var(--accent)' },
+      '&': { height: '100%', color: 'var(--ink)', backgroundColor: 'var(--paper)', fontSize: `${fontSize}px` },
+      '.cm-scroller': { fontFamily: 'var(--font-mono)', lineHeight: '1.65', overflow: 'auto' },
+      '.cm-content': { minHeight: '100%', padding: '28px 28px 60px 14px', caretColor: 'var(--accent)' },
       '.cm-gutters': { backgroundColor: 'var(--paper)', color: 'var(--muted)', border: 'none' },
       '.cm-activeLine': { backgroundColor: 'var(--line-wash)' },
       '.cm-activeLineGutter': { backgroundColor: 'var(--line-wash)', color: 'var(--ink-soft)' },
@@ -58,39 +104,76 @@ export function CodeMirrorEditor({ value, theme, onChange, onViewReady, onSearch
   useEffect(() => {
     const parent = mountRef.current
     if (!parent) return
-
-    const view = new EditorView({
+    const selection = initialViewState
+      ? {
+        anchor: Math.min(value.length, Math.max(0, initialViewState.anchor)),
+        head: Math.min(value.length, Math.max(0, initialViewState.head)),
+      }
+      : undefined
+    let view: EditorView
+    view = new EditorView({
       state: EditorState.create({
         doc: value,
+        selection,
         extensions: [
-          themeCompartmentRef.current.of(editorTheme(theme === 'dark')),
+          styleCompartmentRef.current.of(editorTheme(theme === 'dark', fontSizePx)),
           lineNumbers(),
           foldGutter(),
           highlightActiveLineGutter(),
           highlightActiveLine(),
           drawSelection(),
           history(),
+          indentUnit.of('  '),
           indentOnInput(),
           bracketMatching(),
           closeBrackets(),
           search(),
           markdown(),
           EditorView.lineWrapping,
-          keymap.of([...searchKeymap, ...historyKeymap, ...defaultKeymap, indentWithTab]),
+          keymap.of([
+            { key: 'Mod-s', run: () => { onSaveRef.current(); return true } },
+            ...searchKeymap,
+            ...historyKeymap,
+            ...defaultKeymap,
+            indentWithTab,
+          ]),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) onChangeRef.current(update.state.doc.toString())
+            if (update.docChanged || update.selectionSet) {
+              onViewStateChangeRef.current?.(viewState(update.view))
+              onHistoryChangeRef.current?.({
+                canUndo: undoDepth(update.state) > 0,
+                canRedo: redoDepth(update.state) > 0,
+              })
+            }
           }),
         ],
       }),
       parent,
     })
     viewRef.current = view
-    onViewReadyRef.current?.(view)
-    onSearchReadyRef.current?.(() => openSearchPanel(view))
+    const saveViewState = () => onViewStateChangeRef.current?.(viewState(view))
+    view.scrollDOM.addEventListener('scroll', saveViewState, { passive: true })
+    onCommandsReadyRef.current?.({
+      undo: () => { undo(view) },
+      redo: () => { redo(view) },
+      search: () => { openSearchPanel(view) },
+      searchNext: () => { findNext(view) },
+      searchPrevious: () => { findPrevious(view) },
+    })
+    onHistoryChangeRef.current?.({ canUndo: false, canRedo: false })
+    requestAnimationFrame(() => {
+      if (!view.dom.isConnected) return
+      view.scrollDOM.scrollTop = initialViewState?.scrollTop ?? 0
+      view.scrollDOM.scrollLeft = initialViewState?.scrollLeft ?? 0
+      view.focus()
+    })
 
     return () => {
-      onViewReadyRef.current?.(null)
-      onSearchReadyRef.current?.(null)
+      view.scrollDOM.removeEventListener('scroll', saveViewState)
+      saveViewState()
+      onCommandsReadyRef.current?.(null)
+      onHistoryChangeRef.current?.({ canUndo: false, canRedo: false })
       view.destroy()
       viewRef.current = null
     }
@@ -99,8 +182,8 @@ export function CodeMirrorEditor({ value, theme, onChange, onViewReady, onSearch
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
-    view.dispatch({ effects: themeCompartmentRef.current.reconfigure(editorTheme(theme === 'dark')) })
-  }, [theme])
+    view.dispatch({ effects: styleCompartmentRef.current.reconfigure(editorTheme(theme === 'dark', fontSizePx)) })
+  }, [theme, fontSizePx])
 
   useEffect(() => {
     const view = viewRef.current

@@ -3,13 +3,16 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { open, save } from '@tauri-apps/plugin-dialog'
+import { EditorView } from '@codemirror/view'
 import { App } from './App'
 import { READER_STORAGE_KEYS } from '../features/reader/preferences'
+import { WORKSPACE_ROOT_STORAGE_KEY } from '../features/workspace/preferences'
 
 const tauri = vi.hoisted(() => ({
   invoke: vi.fn(),
   isTauri: vi.fn(),
   listen: vi.fn(),
+  listeners: {} as Record<string, (event: { payload: unknown }) => void>,
   onDragDropEvent: vi.fn(),
 }))
 const mermaidModuleState = vi.hoisted(() => ({ loaded: false }))
@@ -131,6 +134,7 @@ describe('MdStudio Reader UI', () => {
     tauri.invoke.mockReset()
     tauri.isTauri.mockReset()
     tauri.listen.mockReset()
+    tauri.listeners = {}
     tauri.onDragDropEvent.mockReset()
     vi.mocked(open).mockReset()
     vi.mocked(save).mockReset()
@@ -138,7 +142,10 @@ describe('MdStudio Reader UI', () => {
     mathRenderingState.defer = false
     mathRenderingState.release = null
     pdfViewerState.pendingCallbacks = {}
-    tauri.listen.mockResolvedValue(vi.fn())
+    tauri.listen.mockImplementation((name: string, callback: (event: { payload: unknown }) => void) => {
+      tauri.listeners[name] = callback
+      return Promise.resolve(vi.fn())
+    })
     tauri.onDragDropEvent.mockResolvedValue(vi.fn())
     Object.defineProperty(window, 'scrollTo', { configurable: true, value: vi.fn() })
     Object.defineProperty(window, 'scrollBy', { configurable: true, value: vi.fn() })
@@ -154,7 +161,7 @@ describe('MdStudio Reader UI', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows the minimal read-only home when no document is open', async () => {
+  it('shows the desktop home and recent-file entry when no document is open', async () => {
     tauri.isTauri.mockReturnValue(false)
     await renderApp()
 
@@ -190,6 +197,77 @@ describe('MdStudio Reader UI', () => {
     })
     expect(host.querySelector('[data-testid="pdf-viewer"]')?.textContent).toBe('选择器样本.pdf')
     expect(host.querySelector('[role="tab"][title="/tmp/选择器样本.pdf"]')).not.toBeNull()
+  })
+
+  it('文件夹工作区按需列出文档，并将点击交给既有多格式打开流程', async () => {
+    const documentPath = '/tmp/workspace/guide.md'
+    tauri.isTauri.mockReturnValue(true)
+    vi.mocked(open).mockResolvedValue('/tmp/workspace')
+    tauri.invoke.mockImplementation(async (command: string, args?: { rootPath?: string; directoryPath?: string; filePath?: string }) => {
+      if (command === 'take_pending_open_files') return []
+      if (command === 'open_workspace') return { path: args?.rootPath, displayName: 'workspace' }
+      if (command === 'list_workspace_directory') return { directoryPath: args?.directoryPath, entries: args?.directoryPath === '/tmp/workspace'
+        ? [
+          { name: 'nested', path: '/tmp/workspace/nested', isDirectory: true, documentType: null },
+          { name: 'guide.md', path: documentPath, isDirectory: false, documentType: 'markdown' },
+        ]
+        : [{ name: 'nested.md', path: '/tmp/workspace/nested/nested.md', isDirectory: false, documentType: 'markdown' }],
+        truncated: false }
+      if (command === 'normalize_reader_path') return args?.filePath
+      if (command === 'load_reader_document') return documentFor(documentPath)
+      return null
+    })
+    await renderApp()
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('.app-sidebar-nav-item[title="工作区"]')?.click()
+      await new Promise(resolve => setTimeout(resolve, 10))
+    })
+    expect(open).toHaveBeenCalledWith({ directory: true, multiple: false })
+    expect(tauri.invoke).toHaveBeenCalledWith('open_workspace', { rootPath: '/tmp/workspace' })
+    expect(localStorage.getItem(WORKSPACE_ROOT_STORAGE_KEY)).toBe('/tmp/workspace')
+    expect(host.querySelector('[title="/tmp/workspace/guide.md"]')).not.toBeNull()
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('.workspace-sidebar .folder-row')?.click()
+      await new Promise(resolve => setTimeout(resolve, 5))
+    })
+    expect(host.querySelector('[title="/tmp/workspace/nested/nested.md"]')).not.toBeNull()
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="收起侧边栏"]')?.click())
+    expect(host.querySelector('.app-sidebar')?.classList.contains('is-collapsed')).toBe(true)
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="展开侧边栏"]')?.click())
+    expect(host.querySelector('.app-sidebar')?.classList.contains('is-collapsed')).toBe(false)
+    expect(host.querySelector('[title="/tmp/workspace/nested/nested.md"]')).not.toBeNull()
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[title="/tmp/workspace/guide.md"]')?.click()
+      await new Promise(resolve => setTimeout(resolve, 25))
+    })
+    expect(host.querySelector('[role="tab"][title="/tmp/workspace/guide.md"]')).not.toBeNull()
+    expect(host.querySelector('.reader-article')?.textContent).toContain('guide.md')
+  })
+
+  it('桌面启动时自动恢复上次打开的工作区', async () => {
+    const workspacePath = '/tmp/remembered-workspace'
+    localStorage.setItem(WORKSPACE_ROOT_STORAGE_KEY, workspacePath)
+    tauri.isTauri.mockReturnValue(true)
+    tauri.invoke.mockImplementation(async (command: string, args?: { rootPath?: string; directoryPath?: string }) => {
+      if (command === 'take_pending_open_files') return []
+      if (command === 'open_workspace') return { path: args?.rootPath, displayName: 'remembered-workspace' }
+      if (command === 'list_workspace_directory') return {
+        directoryPath: args?.directoryPath,
+        entries: [{ name: 'guide.md', path: `${workspacePath}/guide.md`, isDirectory: false, documentType: 'markdown' }],
+        truncated: false,
+      }
+      return null
+    })
+
+    await renderApp()
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+
+    expect(tauri.invoke).toHaveBeenCalledWith('open_workspace', { rootPath: workspacePath })
+    expect(host.querySelector('.app-sidebar-nav-item[title="工作区"]')?.getAttribute('aria-current')).toBe('page')
+    expect(host.querySelector(`[title="${workspacePath}/guide.md"]`)).not.toBeNull()
   })
 
   it('日语界面不直接显示未翻译的 OFD 打开错误', async () => {
@@ -500,8 +578,8 @@ describe('MdStudio Reader UI', () => {
       host.querySelector<HTMLButtonElement>('[aria-label="前进"]')!.click()
       await new Promise(resolve => setTimeout(resolve, 300))
     })
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('目标 Markdown 文件已不存在')
-    expect(host.querySelector('[role="alert"] button')?.textContent).toBe('重试')
+    expect(host.querySelector('.reader-alert')?.textContent).toContain('源文件已删除、移动或重命名')
+    expect(host.querySelector('.reader-alert button')?.textContent).toBe('重试')
     expect(host.querySelector('.reader-shell')).not.toBeNull()
     expect(host.querySelector('.reader-article')?.textContent).toContain('详细内容')
     expect(host.querySelector<HTMLButtonElement>('[aria-label="前进"]')?.disabled).toBe(true)
@@ -1746,9 +1824,115 @@ describe('MdStudio Reader UI', () => {
     expect(host.querySelector('.reader-article')?.textContent).toContain('版本 2')
 
     await act(async () => changeHandler?.({ payload: { paths: [pathA], operation: 'removed' } }))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 190)) })
     expect(host.querySelector('.reader-article')?.textContent).toContain('版本 2')
     expect(host.querySelector('.reader-alert')?.textContent).toContain('已删除')
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find(tab => tab.title === pathB)?.click())
     expect(host.querySelector('.reader-article')?.textContent).toContain('未修改')
+  })
+
+  it('Markdown 编辑缓冲区按标签保存，失败保留草稿，关闭时提供保存确认', async () => {
+    const path = '/tmp/可编辑.md'
+    let diskText = '# 可编辑.md\n初始内容'
+    let failSave = true
+    let holdSave = false
+    let pendingSaveContent = ''
+    let resolvePendingSave: ((value: { filePath: string; diskVersionHash: string; byteSize: number }) => void) | null = null
+    tauri.isTauri.mockReturnValue(true)
+    tauri.invoke.mockImplementation(async (command: string, args?: { filePath?: string; sessionId?: string; content?: string }) => {
+      if (command === 'take_pending_open_files') return [path]
+      if (command === 'normalize_reader_path') return args?.filePath
+      if (command === 'load_reader_document') return documentFor(path, diskText)
+      if (command === 'open_markdown_edit_document') return {
+        sessionId: 'edit-session-1',
+        snapshot: { filePath: path, content: diskText, diskVersionHash: 'hash-1', bom: false, lineEnding: 'lf' },
+      }
+      if (command === 'save_markdown_edit_document') {
+        if (failSave) throw new Error('模拟保存失败')
+        const submitted = args?.content ?? ''
+        if (holdSave) {
+          pendingSaveContent = submitted
+          return new Promise(resolve => { resolvePendingSave = resolve })
+        }
+        diskText = submitted
+        return { filePath: path, diskVersionHash: 'hash-2', byteSize: diskText.length }
+      }
+      if (command === 'inspect_document_path') return { exists: true }
+      if (command === 'check_markdown_edit_version') return { changed: false, diskVersionHash: 'hash-2' }
+      return null
+    })
+    await renderApp()
+    await act(async () => host.querySelector<HTMLButtonElement>('[title="编辑模式"]')?.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)) })
+    const content = host.querySelector<HTMLElement>('.cm-content')
+    expect(content).not.toBeNull()
+    const view = EditorView.findFromDOM(content!)!
+    await act(async () => view.dispatch({ changes: { from: view.state.doc.length, insert: '\n编辑草稿' } }))
+    expect(host.querySelector('.reader-tab-dirty')).not.toBeNull()
+
+    await act(async () => host.querySelector<HTMLButtonElement>('.app-sidebar-nav-item[title="首页"]')?.click())
+    expect(host.querySelector('.reader-main')?.style.visibility).toBe('hidden')
+    expect(view.state.doc.toString()).toContain('编辑草稿')
+    expect(host.querySelector('.reader-tab-dirty')).not.toBeNull()
+    await act(async () => host.querySelector<HTMLButtonElement>(`[role="tab"][title="${path}"]`)?.click())
+    expect(host.querySelector('.reader-main')?.style.display).not.toBe('none')
+    expect(EditorView.findFromDOM(host.querySelector<HTMLElement>('.cm-content')!)).toBe(view)
+
+    await act(async () => host.querySelector<HTMLButtonElement>('.markdown-save-button')?.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    expect(view.state.doc.toString()).toContain('编辑草稿')
+    expect(host.querySelector('.reader-tab-dirty')).not.toBeNull()
+
+    failSave = false
+    await act(async () => host.querySelector<HTMLButtonElement>('.markdown-save-button')?.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(tauri.invoke).toHaveBeenCalledWith('save_markdown_edit_document', expect.objectContaining({
+      sessionId: 'edit-session-1',
+      content: '# 可编辑.md\n初始内容\n编辑草稿',
+      bom: false,
+      lineEnding: 'lf',
+    }))
+    expect(host.querySelector('.reader-tab-dirty')).toBeNull()
+
+    await act(async () => {
+      tauri.listeners['mdstudio:file-change']?.({ payload: { paths: [path], operation: 'removed' } })
+      await new Promise(resolve => setTimeout(resolve, 190))
+    })
+    expect(host.querySelector(`[role="tab"][title="${path}"] .reader-tab-indicator.is-stale`)).toBeNull()
+    expect(host.querySelector('.reader-alert')?.textContent ?? '').not.toContain('已删除')
+
+    holdSave = true
+    await act(async () => view.dispatch({ changes: { from: view.state.doc.length, insert: '\n保存期间的提交' } }))
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('.markdown-save-button')?.click()
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(resolvePendingSave).not.toBeNull()
+    await act(async () => {
+      view.dispatch({ changes: { from: view.state.doc.length, insert: '\n保存期间的新修改' } })
+      diskText = pendingSaveContent
+      resolvePendingSave?.({ filePath: path, diskVersionHash: 'hash-3', byteSize: diskText.length })
+      resolvePendingSave = null
+      await new Promise(resolve => setTimeout(resolve, 20))
+    })
+    holdSave = false
+    expect(host.querySelector('.reader-tab-dirty')).not.toBeNull()
+    expect(view.state.doc.toString()).toContain('保存期间的新修改')
+
+    await act(async () => view.dispatch({ changes: { from: view.state.doc.length, insert: '\n未保存' } }))
+    await act(async () => tauri.listeners['mdstudio:quit-requested']?.({ payload: null }))
+    expect(host.querySelector('[role="alertdialog"] h2')?.textContent).toBe('退出前保存更改？')
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find(button => button.textContent === '取消')?.click())
+    expect(host.querySelector('[role="tab"][title="/tmp/可编辑.md"]')).not.toBeNull()
+    expect(host.querySelector('.reader-tab-dirty')).not.toBeNull()
+
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="关闭 可编辑.md"]')?.click())
+    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('未保存更改')
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find(button => button.textContent === '取消')?.click())
+    expect(host.querySelector('[role="tab"][title="/tmp/可编辑.md"]')).not.toBeNull()
+    expect(host.querySelector('.reader-tab-dirty')).not.toBeNull()
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="关闭 可编辑.md"]')?.click())
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find(button => button.textContent === '放弃更改')?.click())
+    expect(host.querySelector('[role="tab"][title="/tmp/可编辑.md"]')).toBeNull()
   })
 })

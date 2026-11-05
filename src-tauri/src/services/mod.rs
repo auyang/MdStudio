@@ -1,7 +1,10 @@
 pub mod documents;
+pub mod editor;
+pub mod files;
 pub mod ofd_reader;
 pub mod pdf_export;
 pub mod pdf_reader;
 pub mod reader;
 pub mod system_fonts;
 pub mod watcher;
+pub mod workspace;

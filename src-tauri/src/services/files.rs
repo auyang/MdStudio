@@ -20,6 +20,7 @@ const HIDDEN_DIRS: &[&str] = &[
     "System Volume Information",
     "$RECYCLE.BIN",
 ];
+const MAX_EDIT_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum FileServiceError {
@@ -33,6 +34,8 @@ pub enum FileServiceError {
     Conflict(String),
     #[error("文件不是有效的 UTF-8 Markdown 文本：{0}")]
     InvalidUtf8(String),
+    #[error("Markdown 文件超过 64 MiB 编辑上限：{0}")]
+    DocumentTooLarge(String),
     #[error("不允许读取文档目录之外的图片：{0}")]
     UnsafeAsset(String),
     #[error("不支持的图片类型：{0}")]
@@ -132,8 +135,22 @@ pub struct VersionCheck {
     pub disk_version_hash: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveTargetInfo {
+    pub canonical_path: String,
+    pub disk_version_hash: Option<String>,
+}
+
 pub fn open_document(file_path: &str) -> Result<DocumentSnapshot, FileServiceError> {
     validate_markdown_path(file_path)?;
+    let metadata = fs::metadata(file_path)?;
+    if !metadata.is_file() {
+        return Err(FileServiceError::NotFound(file_path.into()));
+    }
+    if metadata.len() > MAX_EDIT_DOCUMENT_BYTES {
+        return Err(FileServiceError::DocumentTooLarge(file_path.into()));
+    }
     let bytes = fs::read(file_path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             FileServiceError::NotFound(file_path.into())
@@ -141,6 +158,9 @@ pub fn open_document(file_path: &str) -> Result<DocumentSnapshot, FileServiceErr
             FileServiceError::Io(error)
         }
     })?;
+    if bytes.len() as u64 > MAX_EDIT_DOCUMENT_BYTES {
+        return Err(FileServiceError::DocumentTooLarge(file_path.into()));
+    }
     let disk_version_hash = hash_bytes(&bytes);
     let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
     let text_bytes = if bom { &bytes[3..] } else { &bytes[..] };
@@ -167,6 +187,11 @@ pub fn save_document(
 ) -> Result<SaveResult, FileServiceError> {
     validate_markdown_path(file_path)?;
     let target = Path::new(file_path);
+    if let Ok(metadata) = fs::symlink_metadata(target) {
+        if metadata.file_type().is_symlink() {
+            return Err(FileServiceError::InvalidMarkdownPath(file_path.into()));
+        }
+    }
     let current = read_optional_bytes(target)?;
     match (expected_hash, current.as_deref()) {
         (None, Some(_)) => return Err(FileServiceError::AlreadyExists(file_path.into())),
@@ -182,7 +207,11 @@ pub fn save_document(
     if bom {
         bytes.splice(0..0, [0xEF, 0xBB, 0xBF]);
     }
-    atomic_replace(target, &bytes, current.as_deref())?;
+    if current.is_some() {
+        atomic_replace(target, &bytes, current.as_deref())?;
+    } else {
+        atomic_create(target, &bytes)?;
+    }
 
     Ok(SaveResult {
         file_path: path_string(target),
@@ -192,7 +221,56 @@ pub fn save_document(
 }
 
 pub fn create_markdown_file(file_path: &str) -> Result<SaveResult, FileServiceError> {
-    save_document(file_path, "", None, false, "lf")
+    let target = inspect_save_target(file_path)?;
+    if target.disk_version_hash.is_some() {
+        return Err(FileServiceError::AlreadyExists(target.canonical_path));
+    }
+    let bytes = Vec::new();
+    atomic_create(Path::new(&target.canonical_path), &bytes)?;
+    Ok(SaveResult {
+        file_path: target.canonical_path,
+        disk_version_hash: hash_bytes(&bytes),
+        byte_size: 0,
+    })
+}
+
+pub fn inspect_save_target(file_path: &str) -> Result<SaveTargetInfo, FileServiceError> {
+    validate_markdown_path(file_path)?;
+    let requested = Path::new(file_path);
+    if !requested.is_absolute()
+        || requested
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(FileServiceError::InvalidMarkdownPath(file_path.into()));
+    }
+    let name = requested
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| FileServiceError::InvalidMarkdownPath(file_path.into()))?;
+    let parent = requested
+        .parent()
+        .ok_or_else(|| FileServiceError::InvalidMarkdownPath(file_path.into()))?
+        .canonicalize()?;
+    if !parent.is_dir() {
+        return Err(FileServiceError::NotFound(parent.display().to_string()));
+    }
+    let canonical_path = parent.join(name);
+    let disk_version_hash = match fs::symlink_metadata(&canonical_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(FileServiceError::InvalidMarkdownPath(file_path.into()))
+        }
+        Ok(metadata) if metadata.is_file() => {
+            Some(get_file_info(&canonical_path.to_string_lossy())?.disk_version_hash)
+        }
+        Ok(_) => return Err(FileServiceError::InvalidMarkdownPath(file_path.into())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(FileServiceError::Io(error)),
+    };
+    Ok(SaveTargetInfo {
+        canonical_path: path_string(&canonical_path),
+        disk_version_hash,
+    })
 }
 
 pub fn document_exists(file_path: &str) -> Result<bool, FileServiceError> {
@@ -406,6 +484,9 @@ fn atomic_replace(
     if !parent.is_dir() {
         return Err(FileServiceError::NotFound(parent.display().to_string()));
     }
+    if read_optional_bytes(target)?.as_deref() != previous_bytes {
+        return Err(FileServiceError::Conflict(path_string(target)));
+    }
 
     let permissions = if previous_bytes.is_some() {
         fs::metadata(target)
@@ -424,6 +505,22 @@ fn atomic_replace(
     // 同目录临时文件确保替换在同一文件系统内进行；具体原子性依赖平台的 rename 实现。
     temporary
         .persist(target)
+        .map_err(|error| FileServiceError::Io(error.error))?;
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn atomic_create(target: &Path, bytes: &[u8]) -> Result<(), FileServiceError> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Err(FileServiceError::NotFound(parent.display().to_string()));
+    }
+    let mut temporary = NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist_noclobber(target)
         .map_err(|error| FileServiceError::Io(error.error))?;
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
@@ -577,11 +674,60 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_advanced_markdown_fixtures_without_rewriting_source() {
+    fn creates_only_new_markdown_targets_and_rejects_unsafe_save_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("新文档.markdown");
+        let created = create_markdown_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(created.byte_size, 0);
+        assert_eq!(fs::read(&path).unwrap(), b"");
+        assert!(matches!(
+            create_markdown_file(path.to_str().unwrap()),
+            Err(FileServiceError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            inspect_save_target(directory.path().join("notes.txt").to_str().unwrap()),
+            Err(FileServiceError::InvalidMarkdownPath(_))
+        ));
+        assert!(matches!(
+            inspect_save_target(directory.path().join("../outside.md").to_str().unwrap()),
+            Err(FileServiceError::InvalidMarkdownPath(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_to_save_through_a_replaced_markdown_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let external = outside.path().join("external.md");
+        fs::write(&path, "base").unwrap();
+        fs::write(&external, "protected").unwrap();
+        let snapshot = open_document(path.to_str().unwrap()).unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(&external, &path).unwrap();
+
+        assert!(matches!(
+            save_document(
+                path.to_str().unwrap(),
+                "changed",
+                Some(&snapshot.disk_version_hash),
+                false,
+                "lf"
+            ),
+            Err(FileServiceError::InvalidMarkdownPath(_))
+        ));
+        assert_eq!(fs::read(&external).unwrap(), b"protected");
+    }
+
+    #[test]
+    fn round_trips_reader_markdown_fixtures_without_rewriting_source() {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
-            .join("tests/fixtures/advanced-markdown");
+            .join("tests/fixtures/reader-mvp");
         let temporary = tempfile::tempdir().unwrap();
         let mut paths: Vec<_> = fs::read_dir(fixtures)
             .unwrap()
@@ -589,7 +735,7 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|extension| extension == "md"))
             .collect();
         paths.sort();
-        assert_eq!(paths.len(), 8);
+        assert_eq!(paths.len(), 9);
 
         for source_path in paths {
             let file_name = source_path.file_name().unwrap();

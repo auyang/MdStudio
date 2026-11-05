@@ -252,6 +252,24 @@ export function SettingsDialog({
               </fieldset>
 
               <fieldset className="settings-field">
+                <legend>{t('编辑器字号')} <output htmlFor="editor-font-size">{settings.editorFontSizePx} px</output></legend>
+                <div className="settings-range-row">
+                  <span aria-hidden="true">10</span>
+                  <input
+                    id="editor-font-size"
+                    aria-label={t('编辑器字号')}
+                    type="range"
+                    min={10}
+                    max={24}
+                    step={1}
+                    value={settings.editorFontSizePx}
+                    onChange={event => onSettingsChange({ editorFontSizePx: Number(event.target.value) })}
+                  />
+                  <span aria-hidden="true">24</span>
+                </div>
+              </fieldset>
+
+              <fieldset className="settings-field">
                 <legend>{t('阅读宽度')} <output>{settings.readingWidth === 'fit' ? t('自动适配') : `${READING_WIDTH_PX[settings.readingWidth]} px`}</output></legend>
                 <div className="settings-width-options" role="group" aria-label={t('阅读宽度')}>
                   {widthChoices.map(choice => <button
@@ -284,6 +302,7 @@ export function SettingsDialog({
                 <button type="button" className="settings-secondary-button" onClick={() => onSettingsChange({
                   theme: DEFAULT_READER_SETTINGS.theme,
                   fontSizePx: DEFAULT_READER_SETTINGS.fontSizePx,
+                  editorFontSizePx: DEFAULT_READER_SETTINGS.editorFontSizePx,
                   readingWidth: DEFAULT_READER_SETTINGS.readingWidth,
                 })}>{t('恢复阅读默认值')}</button>
               </div>

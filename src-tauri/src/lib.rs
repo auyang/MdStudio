@@ -229,6 +229,9 @@ pub fn run() {
         .manage(services::pdf_reader::PdfReadRegistry::default())
         .manage(services::ofd_reader::OfdReadRegistry::default())
         .manage(services::system_fonts::SystemFontService::default())
+        .manage(services::workspace::WorkspaceRegistry::default())
+        .manage(services::editor::MarkdownEditRegistry::default())
+        .manage(commands::UnsavedMarkdownState::default())
         .setup(|app| {
             app.manage(FileWatcherService::default());
             #[cfg(target_os = "macos")]
@@ -246,28 +249,19 @@ pub fn run() {
         commands::release_reader_image_document,
         commands::normalize_reader_path,
         commands::inspect_document_path,
-        commands::inspect_pdf_document,
-        commands::read_pdf_range,
-        commands::cancel_pdf_range,
-        commands::inspect_ofd_document,
-        commands::read_ofd_document,
-        commands::cancel_ofd_read,
-        commands::resolve_ofd_system_fonts,
-        commands::read_ofd_system_font,
-        commands::release_ofd_system_fonts,
-        commands::take_pending_open_files,
-        commands::set_reader_watch,
-        commands::open_external_url,
-        commands::export_reader_pdf,
-        commands::set_application_locale
-    ]);
-    #[cfg(feature = "perf-benchmark")]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        commands::load_reader_document,
-        commands::load_reader_image,
-        commands::release_reader_image_document,
-        commands::normalize_reader_path,
-        commands::inspect_document_path,
+        commands::open_workspace,
+        commands::list_workspace_directory,
+        commands::create_workspace_markdown_file,
+        commands::set_unsaved_markdown_count,
+        commands::finish_application_exit,
+        commands::open_markdown_edit_document,
+        commands::save_markdown_edit_document,
+        commands::inspect_markdown_save_target,
+        commands::save_markdown_edit_as,
+        commands::check_markdown_edit_version,
+        commands::release_markdown_edit_session,
+        commands::create_markdown_file_at,
+        commands::render_markdown_preview,
         commands::inspect_pdf_document,
         commands::read_pdf_range,
         commands::cancel_pdf_range,
@@ -282,6 +276,43 @@ pub fn run() {
         commands::open_external_url,
         commands::export_reader_pdf,
         commands::set_application_locale,
+        commands::realign_macos_title_bar
+    ]);
+    #[cfg(feature = "perf-benchmark")]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        commands::load_reader_document,
+        commands::load_reader_image,
+        commands::release_reader_image_document,
+        commands::normalize_reader_path,
+        commands::inspect_document_path,
+        commands::open_workspace,
+        commands::list_workspace_directory,
+        commands::create_workspace_markdown_file,
+        commands::set_unsaved_markdown_count,
+        commands::finish_application_exit,
+        commands::open_markdown_edit_document,
+        commands::save_markdown_edit_document,
+        commands::inspect_markdown_save_target,
+        commands::save_markdown_edit_as,
+        commands::check_markdown_edit_version,
+        commands::release_markdown_edit_session,
+        commands::create_markdown_file_at,
+        commands::render_markdown_preview,
+        commands::inspect_pdf_document,
+        commands::read_pdf_range,
+        commands::cancel_pdf_range,
+        commands::inspect_ofd_document,
+        commands::read_ofd_document,
+        commands::cancel_ofd_read,
+        commands::resolve_ofd_system_fonts,
+        commands::read_ofd_system_font,
+        commands::release_ofd_system_fonts,
+        commands::take_pending_open_files,
+        commands::set_reader_watch,
+        commands::open_external_url,
+        commands::export_reader_pdf,
+        commands::set_application_locale,
+        commands::realign_macos_title_bar,
         commands::record_performance_sample
     ]);
     let app = builder
@@ -289,6 +320,13 @@ pub fn run() {
         .expect("启动 MdStudio 时发生错误");
 
     app.run(|_handle, _event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
+            if _handle.state::<commands::UnsavedMarkdownState>().count() > 0 {
+                api.prevent_exit();
+                use tauri::Emitter;
+                let _ = _handle.emit("mdstudio:quit-requested", ());
+            }
+        }
         #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
         if let tauri::RunEvent::Opened { urls } = _event {
             for url in urls {

@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) · [English](README.md) · [日本語](README.ja.md)
 
-**MdStudio v0.2.0** 是一款本地只读文档阅读器，支持 Markdown、PDF 和 OFD。打开文件即可阅读，并可在同一窗口使用多标签浏览。
+**MdStudio v0.3.0** 是一款本地文档阅读器，支持 Markdown、PDF 和 OFD，并提供文件夹工作区与轻量 Markdown 源码编辑。
 
 > Just Read Markdown. 打开文档，即刻阅读。
 
@@ -26,7 +26,7 @@
 
 | 格式 | 阅读能力 | 说明 |
 | --- | --- | --- |
-| Markdown（`.md`、`.markdown`） | Markdown/GFM、代码高亮、Mermaid、KaTeX 公式、GitHub Alerts、本地图片和链接 | 只读，不修改源文件。 |
+| Markdown（`.md`、`.markdown`） | Markdown/GFM、代码高亮、Mermaid、KaTeX 公式、GitHub Alerts、本地图片和链接；支持 CodeMirror 源码编辑 | 手动保存、另存为、冲突保护、撤销/重做和未保存提示；不自动保存。 |
 | PDF（`.pdf`） | 连续阅读、页码导航、缩放、旋转、文字选择、搜索、缩略图及可用的大纲 | PDF.js、Worker 和所需资源随应用本地打包。扫描件不提供 OCR；加密 PDF 暂无密码输入。 |
 | OFD（`.ofd`） | 本地页面阅读、导航、缩放、旋转、缩略图；存在文字层时可搜索 | 兼容性仍属实验阶段。缺少字体时中文可能空白；系统字体替代可改善部分文档，但安装包尚未内置中文兜底字体。显示印章不代表已验签。 |
 
@@ -39,6 +39,8 @@
 - 选择浅色、深色或跟随系统主题，调整 Markdown 字号和阅读宽度，支持“适应屏幕”。
 - 界面提供简体中文、English 和日本語。
 - 在设置中恢复上次打开的标签、记忆阅读位置及管理最近文件。
+- 打开文件夹工作区后，可通过按需加载的目录树浏览 Markdown、PDF 和 OFD；下次启动会恢复上次工作区。
+- 使用 CodeMirror 6 编辑 Markdown 源码。只有 `.md` 和 `.markdown` 可保存；PDF 和 OFD 仍为只读。
 - Mermaid 图表和 LaTeX 公式使用随应用打包的本地资源，不依赖 CDN。
 
 ## 已知限制
@@ -49,11 +51,11 @@
 
 ## 安全与数据边界
 
-MdStudio 不会编辑 Markdown、PDF、OFD、图片或附件。阅读偏好、标签会话、最近文件路径和阅读位置仅保存在本机。文档不会上传，应用不使用云服务或数据库。
+Markdown 源码仅在用户明确保存后写入。PDF、OFD、图片和附件仍为只读。阅读偏好、工作区路径、标签会话、最近文件路径和阅读位置仅保存在本机；文档不会上传到 MdStudio 或云服务。
 
-Markdown HTML 经过白名单清洗；脚本不会执行，危险 URL 会被移除，远程图片不会加载。相对资源会限制在文档目录内。HTTPS 链接仅在用户点击后交由系统浏览器打开。PDF.js、Mermaid、KaTeX 和 OFD Viewer 资源均随应用本地打包，可离线使用。
+Markdown HTML 经过白名单清洗；脚本不会执行，危险 URL 会被移除。相对资源会限制在文档目录内。安全的 HTTPS 图片可以从图片源站加载，源站会收到常规图片请求；HTTPS 链接仅在用户点击后交由系统浏览器打开。PDF.js、Mermaid、KaTeX 和 OFD Viewer 资源均随应用本地打包，可离线使用。
 
-MdStudio 不包含 Markdown 编辑器、AI 对话、工作区、账户、云同步或插件系统。
+MdStudio 暂不包含分屏 Markdown 编辑、AI 对话、账户、云同步或插件系统。
 
 ## 安装与运行
 

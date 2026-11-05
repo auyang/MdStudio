@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
-**MdStudio v0.2.0** is a local, read-only desktop reader for Markdown, PDF, and OFD documents. Open a file and start reading, with multi-tab navigation and a focused reading interface.
+**MdStudio v0.3.0** is a local desktop reader for Markdown, PDF, and OFD, with folder workspaces and lightweight Markdown source editing.
 
 > Just read Markdown. Open a document and start reading.
 
@@ -26,7 +26,7 @@
 
 | Format | Reading support | Notes |
 | --- | --- | --- |
-| Markdown (`.md`, `.markdown`) | Markdown/GFM, code highlighting, Mermaid, KaTeX formulas, GitHub Alerts, local images and links | Read-only; preserves the source file. |
+| Markdown (`.md`, `.markdown`) | Markdown/GFM, code highlighting, Mermaid, KaTeX formulas, GitHub Alerts, local images and links; CodeMirror source editing | Explicit save, save as, conflict protection, undo/redo, and unsaved-change prompts; no auto-save. |
 | PDF (`.pdf`) | Continuous pages, page navigation, zoom, rotation, text selection, search, thumbnails and available outline | PDF.js and its worker and supporting resources are bundled locally. Scanned documents have no OCR; encrypted PDFs have no password prompt. |
 | OFD (`.ofd`) | Local page viewing, navigation, zoom, rotation, thumbnails and text-layer search when text is available | Compatibility is experimental. Missing fonts can leave Chinese text blank. System font substitution helps some files, but no bundled Chinese fallback font is included. Signatures are displayed but never verified. |
 
@@ -39,6 +39,8 @@ The file picker, drag and drop, and mixed-format tabs are available in the curre
 - Choose light, dark, or system theme; adjust Markdown font size and reading width, including Fit to screen.
 - Use the interface in English, Simplified Chinese, or Japanese.
 - Restore tabs, remember reading positions, and manage recent files in Settings.
+- Open a folder workspace with a lazy-loaded tree for Markdown, PDF, and OFD. MdStudio remembers the last workspace and restores it on startup.
+- Edit Markdown source in CodeMirror 6. Only `.md` and `.markdown` files can be saved; PDF and OFD remain read-only.
 - Render Mermaid diagrams and LaTeX formulas with local assets; no CDN is required.
 
 ## Known limitations
@@ -49,11 +51,11 @@ The file picker, drag and drop, and mixed-format tabs are available in the curre
 
 ## Security and data boundaries
 
-MdStudio does not edit Markdown, PDF, OFD, images, or attachments. Reading preferences, tab sessions, recent-file paths, and reading positions stay on the local machine. Documents are not uploaded and the app uses no cloud service or database.
+Markdown source editing writes only after an explicit save. PDF, OFD, images, and attachments remain read-only. Reading preferences, workspace path, tab sessions, recent-file paths, and reading positions stay on the local machine. Documents are not uploaded to MdStudio or a cloud service.
 
-Markdown HTML is sanitized with an allowlist. Scripts do not run, unsafe URLs are removed, and remote images are not loaded. Relative resources are checked against the document directory. HTTPS links open in the system browser only after the user clicks them. PDF.js, Mermaid, KaTeX, and OFD viewer resources are bundled with the app for offline use.
+Markdown HTML is sanitized with an allowlist. Scripts do not run and unsafe URLs are removed. Relative resources are checked against the document directory. Safe HTTPS images may be loaded from their source host; that host receives a normal image request. HTTPS links open in the system browser only after the user clicks them. PDF.js, Mermaid, KaTeX, and OFD viewer resources are bundled with the app for offline use.
 
-MdStudio does not include a Markdown editor, AI chat, workspace management, accounts, cloud sync, or a plugin system.
+MdStudio does not include split-screen Markdown editing, AI chat, accounts, cloud sync, or a plugin system.
 
 ## Install and run
 
